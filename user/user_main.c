@@ -84,7 +84,8 @@ static void ICACHE_FLASH_ATTR mqttDataCb(uint32_t *args, const char* topic, uint
 
   strncpy(buffer, topic, topic_len);
   buffer[topic_len] = 0;
-  MQTT_local_publish(buffer, (uint8_t*)data, data_len, 0, 0);
+  interpreter_topic_received(buffer, data, data_len, false);
+  //MQTT_local_publish(buffer, (uint8_t*)data, data_len, 0, 0);
 }
 #endif /* MQTT_CLIENT */
 
@@ -199,11 +200,7 @@ bool ICACHE_FLASH_ATTR printf_retainedtopic(retained_entry *entry, void *user_da
 void MQTT_local_DataCallback(uint32_t *args, const char* topic, uint32_t topic_len, const char *data, uint32_t length)
 {
   os_printf("Received: \"%s\" len: %d\r\n", topic, length);
-#ifdef MQTT_CLIENT
-  if (mqtt_connected) {
-    MQTT_Publish(&mqttClient, topic, data, length, 0, 0);
-  }
-#endif
+  interpreter_topic_received(topic, data, length, true);
 }
 
 static char INVALID_LOCKED[] = "Invalid command. Config locked\r\n";
@@ -922,6 +919,7 @@ void ICACHE_FLASH_ATTR user_set_station_config(void)
     wifi_station_set_auto_connect(config.auto_connect != 0);
 }
 
+void test_tokens(char *str);
 
 void ICACHE_FLASH_ATTR user_init()
 {
@@ -1018,7 +1016,13 @@ struct ip_info info;
 
     MQTT_server_start(1883 /*port*/, 30 /*max_subscriptions*/, 30 /*max_retained_items*/);
 
-    //MQTT_local_subscribe("/test/#", 0);
+    {
+    char *prog = "initaction subscribe local /test/#\r\n% Now the events\r\n on topic local /test/123 action publish local /res/1 123\r\non topic local /test/2 action publish local /res/1 2";
+    char *str = (char *)os_malloc(os_strlen(prog+1));
+    os_strcpy(str, prog);
+    interpreter_init(str);
+    }
+
     MQTT_local_onData(MQTT_local_DataCallback);
 
     // Start the timer
