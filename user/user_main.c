@@ -18,6 +18,11 @@
 #include "mqtt_topiclist.h"
 #include "mqtt_retainedlist.h"
 
+#ifdef NTP
+#include "ntp.h"
+uint64_t t_ntp_resync = 0;
+#endif
+
 /* System Task, for signals refer to user_config.h */
 #define user_procTaskPrio        0
 #define user_procTaskQueueLen    1
@@ -70,7 +75,7 @@ static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args)
 static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args)
 {
   MQTT_Client* client = (MQTT_Client*)args;
-  os_printf("MQTT: Published callback\r\n");
+//  os_printf("MQTT: Published\r\n");
 }
 
 static void ICACHE_FLASH_ATTR mqttDataCb(uint32_t *args, const char* topic, uint32_t topic_len, const char *data, uint32_t data_len)
@@ -86,7 +91,7 @@ static void ICACHE_FLASH_ATTR mqttDataCb(uint32_t *args, const char* topic, uint
   strncpy(buffer, topic, topic_len);
   buffer[topic_len] = 0;
   interpreter_topic_received(buffer, data, data_len, false);
-  //MQTT_local_publish(buffer, (uint8_t*)data, data_len, 0, 0);
+//  MQTT_local_publish(buffer, (uint8_t*)data, data_len, 0, 0);
 }
 #endif /* MQTT_CLIENT */
 
@@ -240,6 +245,10 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
         os_sprintf(response, "|scan");
         ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
 #endif
+#ifdef NTP
+        os_sprintf(response, "|time|set ntp_server <ntp_host>|set ntp_interval <secs>|set <ntp_timezone> <hours>\r\n");
+        ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+#endif
 #ifdef MQTT_CLIENT
         os_sprintf(response, "|set [mqtt_host|mqtt_port|mqtt_user|mqtt_password|mqtt_id] <val>\r\n");
         ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
@@ -285,6 +294,13 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 	        config.locked?"***":(char*)config.mqtt_password, config.mqtt_id);
 	   ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
 	}
+#endif
+#ifdef NTP
+	if (os_strcmp(config.ntp_server, "none") != 0) {
+	    os_sprintf(response, "NTP server: %s (interval: %d s, tz: %d)\r\n",
+		config.ntp_server, config.ntp_interval/1000000, config.ntp_timezone);
+	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	}     
 #endif
         os_sprintf(response, "Clock speed: %d\r\n", config.clock_speed);
         ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
@@ -360,6 +376,13 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
         goto command_handled;
     }
 #endif
+#ifdef NTP
+    if (strcmp(tokens[0], "time") == 0)
+    {
+        os_sprintf(response, "%s\r\n", get_timestr(config.ntp_timezone));
+        goto command_handled;
+    }
+#endif
     if (strcmp(tokens[0], "reset") == 0)
     {
 	if (nTokens == 2 && strcmp(tokens[1], "factory") == 0) {
@@ -387,7 +410,7 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
             goto command_handled;
 	}
 	if (strcmp(tokens[1], "local") == 0) {
-	  MQTT_local_publish(tokens[2], tokens[3], os_strlen(tokens[2]), 0, 0);
+	  MQTT_local_publish(tokens[2], tokens[3], os_strlen(tokens[3]), 0, 0);
 	}
 #ifdef MQTT_CLIENT
 	else if (strcmp(tokens[1], "remote") == 0 && mqtt_connected) {
@@ -623,7 +646,30 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 			IP2STR(&config.my_gw));
                 goto command_handled;
             }
+#ifdef NTP
+	    if (strcmp(tokens[1], "ntp_server") == 0)
+	    {
+		os_strncpy(config.ntp_server, tokens[2], 32);
+		config.ntp_server[31] = 0;
+		ntp_set_server(config.ntp_server);
+		os_sprintf(response, "NTP server set to %s\r\n", config.ntp_server);
+                goto command_handled;
+            }
 
+	    if (strcmp(tokens[1], "ntp_interval") == 0)
+	    {
+		config.ntp_interval = atoi(tokens[2])*1000000;
+		os_sprintf(response, "NTP interval set to %d s\r\n", atoi(tokens[2]));
+                goto command_handled;
+            }
+
+	    if (strcmp(tokens[1], "ntp_timezone") == 0)
+	    {
+		config.ntp_timezone = atoi(tokens[2]);
+		os_sprintf(response, "NTP timezone set to %d h\r\n", config.ntp_timezone);
+                goto command_handled;
+            }
+#endif
 #ifdef MQTT_CLIENT
 	    if (strcmp(tokens[1], "mqtt_host") == 0)
 	    {
@@ -747,6 +793,12 @@ uint32_t t_diff;
     }
 
     t_new = get_long_systime();
+#ifdef NTP
+    if (t_new - t_ntp_resync > config.ntp_interval) {
+        ntp_get_time();
+	t_ntp_resync = t_new;
+    }
+#endif
 
     os_timer_arm(&ptimer, toggle?1000:100, 0); 
 }
@@ -920,7 +972,6 @@ void ICACHE_FLASH_ATTR user_set_station_config(void)
     wifi_station_set_auto_connect(config.auto_connect != 0);
 }
 
-void test_tokens(char *str);
 
 void ICACHE_FLASH_ATTR user_init()
 {
@@ -986,6 +1037,30 @@ struct ip_info info;
     }
 #endif
 
+#ifdef MQTT_CLIENT
+    mqtt_connected = false;
+    mqtt_enabled = (os_strcmp(config.mqtt_host, "none") != 0);
+    if (mqtt_enabled) {
+	MQTT_InitConnection(&mqttClient, config.mqtt_host, config.mqtt_port, 0);
+
+	if (os_strcmp(config.mqtt_user, "none") == 0) {
+	  MQTT_InitClient(&mqttClient, config.mqtt_id, 0, 0, 120, 1);
+	} else {
+	  MQTT_InitClient(&mqttClient, config.mqtt_id, config.mqtt_user, config.mqtt_password, 120, 1);
+	}
+//	MQTT_InitLWT(&mqttClient, "/lwt", "offline", 0, 0);
+	MQTT_OnConnected(&mqttClient, mqttConnectedCb);
+	MQTT_OnDisconnected(&mqttClient, mqttDisconnectedCb);
+	MQTT_OnPublished(&mqttClient, mqttPublishedCb);
+	MQTT_OnData(&mqttClient, mqttDataCb);
+    }
+#endif /* MQTT_CLIENT */
+
+#ifdef NTP
+    if (os_strcmp(config.ntp_server, "none") != 0)
+	ntp_set_server(config.ntp_server);
+#endif
+
     remote_console_disconnect = 0;
 
     // Now start the STA-Mode
@@ -1010,26 +1085,6 @@ struct ip_info info;
     // Start the timer
     os_timer_setfn(&ptimer, timer_func, 0);
     os_timer_arm(&ptimer, 500, 0); 
-
-
-#ifdef MQTT_CLIENT
-    mqtt_connected = false;
-    mqtt_enabled = (os_strcmp(config.mqtt_host, "none") != 0);
-    if (mqtt_enabled) {
-	MQTT_InitConnection(&mqttClient, config.mqtt_host, config.mqtt_port, 0);
-
-	if (os_strcmp(config.mqtt_user, "none") == 0) {
-	  MQTT_InitClient(&mqttClient, config.mqtt_id, 0, 0, 120, 1);
-	} else {
-	  MQTT_InitClient(&mqttClient, config.mqtt_id, config.mqtt_user, config.mqtt_password, 120, 1);
-	}
-//	MQTT_InitLWT(&mqttClient, "/lwt", "offline", 0, 0);
-	MQTT_OnConnected(&mqttClient, mqttConnectedCb);
-	MQTT_OnDisconnected(&mqttClient, mqttDisconnectedCb);
-	MQTT_OnPublished(&mqttClient, mqttPublishedCb);
-	MQTT_OnData(&mqttClient, mqttDataCb);
-    }
-#endif /* MQTT_CLIENT */
 
     //Start task
     system_os_task(user_procTask, user_procTaskPrio, user_procTaskQueue, user_procTaskQueueLen);
