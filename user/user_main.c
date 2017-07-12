@@ -881,6 +881,11 @@ void wifi_handle_event_cb(System_Event_t *evt)
 	if (mqtt_enabled) MQTT_Connect(&mqttClient);
 #endif /* MQTT_CLIENT */
 
+#ifdef NTP
+	if (os_strcmp(config.ntp_server, "none") != 0)
+	    ntp_set_server(config.ntp_server);
+#endif
+
         // Post a Server Start message as the IP has been acquired to Task with priority 0
 	system_os_post(user_procTaskPrio, SIG_START_SERVER, 0 );
         break;
@@ -1056,11 +1061,6 @@ struct ip_info info;
     }
 #endif /* MQTT_CLIENT */
 
-#ifdef NTP
-    if (os_strcmp(config.ntp_server, "none") != 0)
-	ntp_set_server(config.ntp_server);
-#endif
-
     remote_console_disconnect = 0;
 
     // Now start the STA-Mode
@@ -1072,14 +1072,14 @@ struct ip_info info;
     os_printf("Max number of TCP clients: %d\r\n", espconn_tcp_get_max_con());
 
     MQTT_server_start(1883 /*port*/, 30 /*max_subscriptions*/, 30 /*max_retained_items*/);
-
+/*
     {
     char *prog = "initaction subscribe local /test/#\r\n% Now the events and much more to come...\r\n on topic local /test/# action publish remote this_topic this_data";
     char *str = (char *)os_malloc(os_strlen(prog+1));
     os_strcpy(str, prog);
     interpreter_init(str);
     }
-
+*/
     MQTT_local_onData(MQTT_local_DataCallback);
 
     // Start the timer
