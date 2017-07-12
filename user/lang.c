@@ -29,8 +29,11 @@
 
 char **token;
 int max_token;
+bool in_topic_statement;
 Interpreter_Status interpreter_status;
 char *interpreter_topic;
+char *interpreter_data;
+int interpreter_data_len;
 
 int ICACHE_FLASH_ATTR text_into_tokens(char *str, char ***tokens_p)
 {
@@ -130,9 +133,11 @@ int j;
 int ICACHE_FLASH_ATTR parse_statement(int next_token)
 {
   while (next_token < max_token) {
+   in_topic_statement = false;
+
    if (is_token(next_token, "initaction")) {
 	lang_debug("statement initaction\r\n");
-	if ((next_token = parse_action(next_token+1, interpreter_status==INIT)) == -1) return -1;
+	if ((next_token = parse_action(next_token+1, interpreter_status==INIT || interpreter_status==RE_INIT)) == -1) return -1;
    }
 
    else if (is_token(next_token, "on")) {
@@ -141,7 +146,7 @@ int ICACHE_FLASH_ATTR parse_statement(int next_token)
 	if ((next_token = parse_event(next_token+1, &event_happened)) == -1) return -1;
 	if (!is_token(next_token, "action"))
 	   return syntax_error(next_token, "'action' expected");   
-	if ((next_token = parse_action(next_token+1, event_happened && (interpreter_status!=INIT))) == -1) return -1;
+	if ((next_token = parse_action(next_token+1, event_happened && (interpreter_status!=INIT && interpreter_status!=RE_INIT))) == -1) return -1;
    } else {
 	return syntax_error(next_token, "'initaction' or 'on' expected");
    }
@@ -155,6 +160,8 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
    *happend = false;
    if (is_token(next_token, "topic")) {
 	lang_debug("event topic\r\n");
+
+	in_topic_statement = true;
 	if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
 	if (is_token(next_token+1, "remote")) {
 	  if (interpreter_status!=TOPIC_REMOTE) return next_token+3;
@@ -195,7 +202,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 		lang_info("subsrcibe remote %s %s\r\n", token[next_token+2], retval?"success":"failed");
 	   }
 	} else if (is_token(next_token+1, "local")) {
-	   if (doit) {
+	   if (doit && interpreter_status!=RE_INIT) {
 		retval = MQTT_local_subscribe(token[next_token+2], 0);
 		lang_info("subsrcibe local %s %s\r\n", token[next_token+2], retval?"success":"failed");
 	   }
@@ -215,7 +222,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 		lang_info("unsubsrcibe remote %s %s\r\n", token[next_token+2], retval?"success":"failed");
 	   }
 	} else if (is_token(next_token+1, "local")) {
-	   if (doit) {
+	   if (doit && interpreter_status!=RE_INIT) {
 		retval = MQTT_local_unsubscribe(token[next_token+2]);
 		lang_info("unsubsrcibe local %s %s\r\n", token[next_token+2], retval?"success":"failed");
 	   }
@@ -230,6 +237,9 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 	bool retval;
 	int incr = 4;
 	bool retained = false;
+	char *topic;
+	char *data;
+	int data_len;
 
         if (next_token+3 >= max_token) return syntax_error(next_token+3, "end of text");
 	if (Topics_hasWildcards(token[2])) return syntax_error(next_token+2, "wildcards in topic");
@@ -237,15 +247,21 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 	   incr = 5;
 	   retained = true;
 	}
+
+	if (doit) {
+	   parse_topic(next_token+2, &topic);
+	   parse_value(next_token+3, &data, &data_len);
+	}
+
 	if (is_token(next_token+1, "remote")) {
 	   if (doit && mqtt_connected) {
-		MQTT_Publish(&mqttClient, token[next_token+2], token[next_token+3], os_strlen(token[next_token+3]), 0, retained);
-		lang_info("published remote %s %s\r\n", token[next_token+2], token[next_token+3]);
+		MQTT_Publish(&mqttClient, topic, data, data_len, 0, retained);
+		lang_info("published remote %s len: %d\r\n", topic, data_len);
 	   }
 	} else if (is_token(next_token+1, "local")) {
-	   if (doit) {
-		MQTT_local_publish(token[next_token+2], token[next_token+3], os_strlen(token[next_token+3]), 0, retained);
-		lang_info("published local %s %s\r\n", token[next_token+2], token[next_token+3]);
+	   if (doit && interpreter_status!=RE_INIT) {
+		MQTT_local_publish(topic, data, data_len, 0, retained);
+		lang_info("published local %s len: %d\r\n", topic, data_len);
 	   }
 	} else {
 	   return syntax_error(next_token+1, "'local' or 'remote' expected");
@@ -265,46 +281,114 @@ if (doit) os_printf("settimer %s %s\r\n", token[next_token+1], token[next_token+
   }
 }
 
-int ICACHE_FLASH_ATTR interpreter_init(char *str){
 
+int ICACHE_FLASH_ATTR parse_topic(int next_token, char **topic)
+{
+   if (is_token(next_token, "this_topic")) {
+	lang_debug("val this_topic\r\n");
+	if (!in_topic_statement) return syntax_error(next_token, "undefined topic");
+	*topic = interpreter_topic;
+	return next_token+1;
+   } else {
+	*topic = token[next_token];
+	return next_token+1;
+   }
+}
+
+
+int ICACHE_FLASH_ATTR parse_value(int next_token, char **data, int *data_len)
+{
+static char val_buf[64];
+
+   if (is_token(next_token, "this_data")) {
+	lang_debug("val this_data\r\n");
+	if (!in_topic_statement) return syntax_error(next_token, "undefined topic data");
+	*data = interpreter_data;
+	*data_len = interpreter_data_len;
+	return next_token+1;
+   }
+
+   else if (token[next_token][0] == '\'') {
+	char *p = &(token[next_token][1]);
+	int *b = (int*)&val_buf[0];
+
+	*b = atoi(p);
+	*data = val_buf;
+	*data_len = sizeof(int);
+	return next_token+1;
+   }
+
+   else if (token[next_token][0] == '#') {
+	int i, j, a;
+	char *p = &(token[next_token][1]);
+
+	lang_debug("val hexbinary\r\n");
+	if (os_strlen(p)/2 > sizeof(val_buf)) return syntax_error(next_token, "binary sting too long");
+	for (i = 0, j = 0; i < os_strlen(p); i+=2, j++) {
+	   if (p[i] <= '9')
+		a = p[i] - '0';
+	   else
+		a = toupper(p[i]) - 'A'+10;
+	   a <<= 4;
+	   if (p[i+1] <= '9')
+		a += p[i+1] - '0';
+	   else
+		a += toupper(p[i+1]) - 'A'+10;
+	   val_buf[j] = a;
+	}
+ 
+	*data = val_buf;
+	*data_len = j;
+	return next_token+1;
+   }
+
+   else {
+	*data = token[next_token];
+	*data_len = os_strlen(token[next_token]);
+	return next_token+1;
+   }
+}
+
+
+int ICACHE_FLASH_ATTR interpreter_init(char *str)
+{
    max_token = text_into_tokens(str, &token);
+   test_tokens();
 
    interpreter_status = INIT;
+   interpreter_topic = interpreter_data ="";
+   interpreter_data_len = 0;
    return parse_statement(0);
 }
 
 
-int ICACHE_FLASH_ATTR interpreter_topic_received(char *topic, char *data, int length, bool local){
+int ICACHE_FLASH_ATTR interpreter_init_reconnect(void)
+{
+   interpreter_status = RE_INIT;
+   interpreter_topic = interpreter_data ="";
+   interpreter_data_len = 0;
+   return parse_statement(0);
+}
 
+
+int ICACHE_FLASH_ATTR interpreter_topic_received(char *topic, char *data, int data_len, bool local)
+{
    interpreter_status = (local)?TOPIC_LOCAL:TOPIC_REMOTE;
    interpreter_topic = topic;
+   interpreter_data = data;
+   interpreter_data_len = data_len;
 
    return parse_statement(0);
 }
 
 
-void ICACHE_FLASH_ATTR test_tokens(char *str){
+void ICACHE_FLASH_ATTR test_tokens(void){
    int i;
-
-   max_token = text_into_tokens(str, &token);
 
    for (i = 0; i<max_token; i++) {
 	os_printf("<%s>", token[i]);
    }
    os_printf("\r\n");
-
-   os_printf("INIT:\r\n");
-   interpreter_status = INIT;
-   parse_statement(0);
-
-   os_printf("TOPIC_LOCAL:\r\n");
-   interpreter_status = TOPIC_LOCAL;
-   interpreter_topic = "/test/123";
-   parse_statement(0);
-
-   os_printf("TIMER:\r\n");
-   interpreter_status = TIMER;
-   parse_statement(0);
 }
 
 #ifndef esp8266

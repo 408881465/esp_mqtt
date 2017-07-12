@@ -56,6 +56,7 @@ uint8_t ip_str[16];
 
   MQTT_Client* client = (MQTT_Client*)args;
   mqtt_connected = true;
+  interpreter_init_reconnect();
   os_printf("MQTT client connected\r\n");
 }
 
@@ -69,7 +70,7 @@ static void ICACHE_FLASH_ATTR mqttDisconnectedCb(uint32_t *args)
 static void ICACHE_FLASH_ATTR mqttPublishedCb(uint32_t *args)
 {
   MQTT_Client* client = (MQTT_Client*)args;
-//  os_printf("MQTT: Published\r\n");
+  os_printf("MQTT: Published callback\r\n");
 }
 
 static void ICACHE_FLASH_ATTR mqttDataCb(uint32_t *args, const char* topic, uint32_t topic_len, const char *data, uint32_t data_len)
@@ -985,6 +986,32 @@ struct ip_info info;
     }
 #endif
 
+    remote_console_disconnect = 0;
+
+    // Now start the STA-Mode
+    user_set_station_config();
+
+    system_update_cpu_freq(config.clock_speed);
+
+    espconn_tcp_set_max_con(10);
+    os_printf("Max number of TCP clients: %d\r\n", espconn_tcp_get_max_con());
+
+    MQTT_server_start(1883 /*port*/, 30 /*max_subscriptions*/, 30 /*max_retained_items*/);
+
+    {
+    char *prog = "initaction subscribe local /test/#\r\n% Now the events and much more to come...\r\n on topic local /test/# action publish remote this_topic this_data";
+    char *str = (char *)os_malloc(os_strlen(prog+1));
+    os_strcpy(str, prog);
+    interpreter_init(str);
+    }
+
+    MQTT_local_onData(MQTT_local_DataCallback);
+
+    // Start the timer
+    os_timer_setfn(&ptimer, timer_func, 0);
+    os_timer_arm(&ptimer, 500, 0); 
+
+
 #ifdef MQTT_CLIENT
     mqtt_connected = false;
     mqtt_enabled = (os_strcmp(config.mqtt_host, "none") != 0);
@@ -1003,31 +1030,6 @@ struct ip_info info;
 	MQTT_OnData(&mqttClient, mqttDataCb);
     }
 #endif /* MQTT_CLIENT */
-
-    remote_console_disconnect = 0;
-
-    // Now start the STA-Mode
-    user_set_station_config();
-
-    system_update_cpu_freq(config.clock_speed);
-
-    espconn_tcp_set_max_con(10);
-    os_printf("Max number of TCP clients: %d\r\n", espconn_tcp_get_max_con());
-
-    MQTT_server_start(1883 /*port*/, 30 /*max_subscriptions*/, 30 /*max_retained_items*/);
-
-    {
-    char *prog = "initaction subscribe local /test/#\r\n% Now the events\r\n on topic local /test/123 action publish local /res/1 123\r\non topic local /test/2 action publish local /res/1 2";
-    char *str = (char *)os_malloc(os_strlen(prog+1));
-    os_strcpy(str, prog);
-    interpreter_init(str);
-    }
-
-    MQTT_local_onData(MQTT_local_DataCallback);
-
-    // Start the timer
-    os_timer_setfn(&ptimer, timer_func, 0);
-    os_timer_arm(&ptimer, 500, 0); 
 
     //Start task
     system_os_task(user_procTask, user_procTaskPrio, user_procTaskQueue, user_procTaskQueueLen);
