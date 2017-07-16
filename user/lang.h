@@ -5,6 +5,7 @@ extern bool mqtt_enabled, mqtt_connected;
 uint8_t sytax_error_buffer[128];
 
 typedef enum {INIT, RE_INIT, TOPIC_LOCAL, TOPIC_REMOTE, TIMER, SYNTAX_CHECK} Interpreter_Status;
+typedef enum {STRING_T, DATA_T} Value_Type;
 
 int text_into_tokens(char *str);
 void free_tokens(void);
@@ -15,8 +16,7 @@ int syntax_error(int i, char *message);
 int parse_statement(int next_token);
 int parse_event(int next_token, bool *happened);
 int parse_action(int next_token, bool doit);
-int parse_topic(int next_token, char **topic);
-int parse_value(int next_token, char **data, int *data_len);
+int parse_value(int next_token, char **data, int *data_len, Value_Type *data_type);
 
 extern bool script_enabled;
 int interpreter_syntax_check();

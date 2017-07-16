@@ -70,7 +70,9 @@ uint8_t ip_str[16];
 
   MQTT_Client* client = (MQTT_Client*)args;
   mqtt_connected = true;
+#ifdef SCRIPTED
   interpreter_init_reconnect();
+#endif
   os_printf("MQTT client connected\r\n");
 }
 
@@ -99,8 +101,9 @@ static void ICACHE_FLASH_ATTR mqttDataCb(uint32_t *args, const char* topic, uint
 
   strncpy(buffer, topic, topic_len);
   buffer[topic_len] = 0;
+#ifdef SCRIPTED
   interpreter_topic_received(buffer, (uint8_t*)data, data_len, false);
-//  MQTT_local_publish(buffer, (uint8_t*)data, data_len, 0, 0);
+#endif
 }
 #endif /* MQTT_CLIENT */
 
@@ -309,8 +312,10 @@ bool ICACHE_FLASH_ATTR printf_retainedtopic(retained_entry *entry, void *user_da
 
 void MQTT_local_DataCallback(uint32_t *args, const char* topic, uint32_t topic_len, const char *data, uint32_t length)
 {
-  os_printf("Received: \"%s\" len: %d\r\n", topic, length);
+//  os_printf("Received: \"%s\" len: %d\r\n", topic, length);
+#ifdef SCRIPTED
   interpreter_topic_received(topic, data, length, true);
+#endif
 }
 
 static char INVALID_LOCKED[] = "Invalid command. Config locked\r\n";
@@ -963,6 +968,7 @@ static void ICACHE_FLASH_ATTR user_procTask(os_event_t *events)
     case SIG_START_SERVER:
 	// Anything else to do here, when the repeater has received its IP?
 	break;
+#ifdef SCRIPTED
     case SIG_SCRIPT_LOADED:
         {
 	    espconn_disconnect(downloadCon);
@@ -979,6 +985,7 @@ static void ICACHE_FLASH_ATTR user_procTask(os_event_t *events)
 
 	    // continue to next case and print...
 	}
+#endif
     case SIG_CONSOLE_TX:
         {
             struct espconn *pespconn = (struct espconn *) events->par;

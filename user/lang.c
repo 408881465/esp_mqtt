@@ -26,6 +26,11 @@
 
 #include "mqtt_topics.h"
 
+typedef struct _var_entry_t {
+    uint8_t data[MAX_VAR_LEN];
+    uint32_t data_len;
+    Value_Type data_type;
+} var_entry_t;
 
 char **my_token;
 int max_token;
@@ -35,6 +40,24 @@ Interpreter_Status interpreter_status;
 char *interpreter_topic;
 char *interpreter_data;
 int interpreter_data_len;
+int interpreter_timer;
+
+static os_timer_t timers[MAX_TIMERS];
+static var_entry_t vars[MAX_VARS];
+
+static void ICACHE_FLASH_ATTR lang_timers_timeout(void *arg) {
+
+	interpreter_timer = (int)arg;
+	os_timer_disarm(&timers[interpreter_timer]);
+	if (!script_enabled) return;
+
+	lang_debug("timer %d expired\r\n", interpreter_timer+1);
+
+	interpreter_topic = interpreter_data ="";
+	interpreter_data_len = 0;
+	interpreter_status = TIMER;
+	parse_statement(0);
+}
 
 
 void ICACHE_FLASH_ATTR test_tokens(void){
@@ -186,7 +209,7 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
    *happend = false;
 
    if (is_token(next_token, "init")) {
-	if (next_token+1 >= max_token) syntax_error(next_token+1, "end of text");
+	if (next_token+1 >= max_token) return syntax_error(next_token+1, "end of text");
 	*happend = (interpreter_status==INIT || interpreter_status==RE_INIT);
 	return next_token+1;
    }
@@ -209,13 +232,20 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
         lang_info("topic %s %s %s %s\r\n", my_token[next_token+1], my_token[next_token+2], interpreter_topic, *happend?"match":"no match");
 	return next_token+3;
    }
-/*
+
    if (is_token(next_token, "timer")) {
-	if (next_token+1 >= max_token) syntax_error(next_token+1, "end of text");
-if (interpreter_status==TIMER) {os_printf("timer %s\r\n", my_token[next_token+1]); *happend=true;}
+	lang_debug("event timer\r\n");
+
+	if (next_token+1 >= max_token) return syntax_error(next_token+1, "end of text");
+	uint32_t timer_no = atoi(my_token[next_token+1]);
+	if (timer_no == 0 || timer_no > MAX_TIMERS) return syntax_error(next_token+1, "invalid timer number");
+	if (interpreter_status==TIMER && interpreter_timer == --timer_no) {
+	    lang_info("timer %s expired\r\n", my_token[next_token+1]);
+	    *happend=true;
+	}
 	return next_token+2;
    }
-*/
+
    return syntax_error(next_token, "'init', 'topic', or 'timer' expected");
 }
 
@@ -268,47 +298,94 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 
    else if (is_token(next_token, "publish")) {
 	bool retval;
-	int incr = 4;
 	bool retained = false;
-	char *topic;
 	char *data;
 	int data_len;
+	Value_Type data_type;
+	char *topic;
+	int topic_len;
+	Value_Type topic_type;
+	int lr_token = next_token+1;
 
         if (next_token+3 >= max_token) return syntax_error(next_token+3, "end of text");
-	if (Topics_hasWildcards(my_token[2])) return syntax_error(next_token+2, "wildcards in topic");
-	if (next_token+4 < max_token && is_token(next_token+4, "retained")) {
-	   incr = 5;
+	if ((next_token = parse_value(next_token+2, &topic, &topic_len, &topic_type)) == -1) return -1;
+	if ((next_token = parse_value(next_token, &data, &data_len, &data_type)) == -1) return -1;
+	if (next_token < max_token && is_token(next_token, "retained")) {
 	   retained = true;
+	   next_token++;
 	}
 
 	if (doit) {
-	   parse_topic(next_token+2, &topic);
-	   parse_value(next_token+3, &data, &data_len);
+	   if (data_type == STRING_T && data_len>0) data_len--;
+	   if (topic_type != STRING_T || Topics_hasWildcards(topic)) {
+		os_printf("invalid topic string\r\n");
+		return next_token;
+	   }
 	}
 
-	if (is_token(next_token+1, "remote")) {
+	if (is_token(lr_token, "remote")) {
 	   if (doit && mqtt_connected) {
 		MQTT_Publish(&mqttClient, topic, data, data_len, 0, retained);
 		lang_info("published remote %s len: %d\r\n", topic, data_len);
 	   }
-	} else if (is_token(next_token+1, "local")) {
+	} else if (is_token(lr_token, "local")) {
 	   if (doit && interpreter_status!=RE_INIT) {
 		MQTT_local_publish(topic, data, data_len, 0, retained);
 		lang_info("published local %s len: %d\r\n", topic, data_len);
 	   }
 	} else {
-	   return syntax_error(next_token+1, "'local' or 'remote' expected");
+	   return syntax_error(lr_token, "'local' or 'remote' expected");
 	}
-	
-	next_token += incr;
    }
 
-/*   else if (is_token(next_token, "settimer")) {
-	if (next_token+2 >= max_token) syntax_error(next_token+2, "end of text");
-if (doit) os_printf("settimer %s %s\r\n", my_token[next_token+1], my_token[next_token+2]);
-	next_token += 3;
+   else if (is_token(next_token, "settimer")) {
+	if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	uint32_t timer_no = atoi(my_token[next_token+1]);
+	if (timer_no == 0 || timer_no > MAX_TIMERS) return syntax_error(next_token+1, "invalid timer number");
+
+	uint32_t timer_val;
+	char *timer_char;
+	int timer_len;
+	Value_Type timer_type;
+	if ((next_token = parse_value(next_token+2, &timer_char, &timer_len, &timer_type)) == -1) return -1;
+
+	if (doit) {
+	   timer_val = atoi(timer_char);
+	   lang_info("settimer %d %d\r\n", timer_no, timer_val);
+	   timer_no--;
+
+	   os_timer_disarm(&timers[timer_no]);
+	   if (timer_val != 0) {
+		os_timer_setfn(&timers[timer_no], (os_timer_func_t*)lang_timers_timeout, timer_no);
+		os_timer_arm(&timers[timer_no], timer_val, 0);
+	   }
+	}
    }
-*/
+
+   else if (is_token(next_token, "setvar")) {
+	if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	if (my_token[next_token+1][0] != '$') return syntax_error(next_token+1, "invalid var identifier");
+	uint32_t var_no = atoi(&(my_token[next_token+1][1]));
+	if (var_no == 0 || var_no > MAX_VARS) return syntax_error(next_token+1, "invalid var number");
+
+	char *var_data;
+	int var_len;
+	Value_Type var_type;
+	if ((next_token = parse_value(next_token+2, &var_data, &var_len, &var_type)) == -1) return -1;
+
+	if (doit) {
+	   lang_info("setvar $%d \r\n", var_no);
+	   if (var_len > MAX_VAR_LEN) {
+		os_printf("Var $%d too long '%s'\r\n", var_no, var_data);
+		return next_token;
+	   }
+	   var_no--;
+	   os_memcpy(vars[var_no].data, var_data, var_len);
+	   vars[var_no].data_len = var_len;
+	   vars[var_no].data_type = var_type;
+	}
+   }
+
    else
 	return syntax_error(next_token, "action command expected");
 	
@@ -317,29 +394,25 @@ if (doit) os_printf("settimer %s %s\r\n", my_token[next_token+1], my_token[next_
 }
 
 
-int ICACHE_FLASH_ATTR parse_topic(int next_token, char **topic)
-{
-   if (is_token(next_token, "this_topic")) {
-	lang_debug("val this_topic\r\n");
-	if (!in_topic_statement) return syntax_error(next_token, "undefined topic");
-	*topic = interpreter_topic;
-	return next_token+1;
-   } else {
-	*topic = my_token[next_token];
-	return next_token+1;
-   }
-}
-
-
-int ICACHE_FLASH_ATTR parse_value(int next_token, char **data, int *data_len)
+int ICACHE_FLASH_ATTR parse_value(int next_token, char **data, int *data_len, Value_Type *data_type)
 {
 static char val_buf[64];
 
    if (is_token(next_token, "this_data")) {
 	lang_debug("val this_data\r\n");
-	if (!in_topic_statement) return syntax_error(next_token, "undefined topic data");
+	if (!in_topic_statement) return syntax_error(next_token, "undefined this_data");
 	*data = interpreter_data;
 	*data_len = interpreter_data_len;
+	*data_type = DATA_T;
+	return next_token+1;
+   }
+
+   else if (is_token(next_token, "this_topic")) {
+	lang_debug("val this_topic\r\n");
+	if (!in_topic_statement) return syntax_error(next_token, "undefined this_topic");
+	*data = interpreter_topic;
+	*data_len = os_strlen(interpreter_topic)+1;
+	*data_type = STRING_T;
 	return next_token+1;
    }
 
@@ -353,6 +426,17 @@ static char val_buf[64];
 	return next_token+1;
    }
 */
+   else if (my_token[next_token][0] == '$') {
+	uint32_t var_no = atoi(&(my_token[next_token][1]));
+	if (var_no == 0 || var_no > MAX_VARS) return syntax_error(next_token+1, "invalid var number");
+	var_no--;
+ 
+	*data = vars[var_no].data;
+	*data_len = vars[var_no].data_len;
+	*data_type = vars[var_no].data_type;
+	return next_token+1;
+   }
+
    else if (my_token[next_token][0] == '#') {
 	int i, j, a;
 	char *p = &(my_token[next_token][1]);
@@ -374,12 +458,14 @@ static char val_buf[64];
  
 	*data = val_buf;
 	*data_len = j;
+	*data_type = DATA_T;
 	return next_token+1;
    }
 
    else {
 	*data = my_token[next_token];
-	*data_len = os_strlen(my_token[next_token]);
+	*data_len = os_strlen(my_token[next_token])+1;
+	*data_type = STRING_T;
 	return next_token+1;
    }
 }

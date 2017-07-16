@@ -1,0 +1,26 @@
+on init
+do
+	subscribe local /test/#
+	settimer 1 2000
+
+% Now the events and much more to come...
+
+on topic local /test/#
+do 
+	publish remote this_topic this_data
+	setvar $1 this_topic
+	settimer 3 5000
+
+on timer 3
+do 
+	publish remote $1 0
+
+on timer 1
+do 
+	publish local /t/1 on 
+	settimer 2 1000
+
+on timer 2
+do 
+	publish local /t/1 off 
+	settimer 1 2000
