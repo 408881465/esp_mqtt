@@ -23,6 +23,15 @@
 uint64_t t_ntp_resync = 0;
 #endif
 
+#ifdef SCRIPTED
+#include "lang.h"
+
+struct espconn *downloadCon;
+struct espconn *scriptcon;
+uint8_t *load_script;
+uint32_t load_size;
+#endif
+
 /* System Task, for signals refer to user_config.h */
 #define user_procTaskPrio        0
 #define user_procTaskQueueLen    1
@@ -90,10 +99,105 @@ static void ICACHE_FLASH_ATTR mqttDataCb(uint32_t *args, const char* topic, uint
 
   strncpy(buffer, topic, topic_len);
   buffer[topic_len] = 0;
-  interpreter_topic_received(buffer, data, data_len, false);
+  interpreter_topic_received(buffer, (uint8_t*)data, data_len, false);
 //  MQTT_local_publish(buffer, (uint8_t*)data, data_len, 0, 0);
 }
 #endif /* MQTT_CLIENT */
+
+
+#ifdef SCRIPTED
+static void ICACHE_FLASH_ATTR script_recv_cb(void *arg,
+                                                 char *data,
+                                                 unsigned short length)
+{
+    struct espconn *pespconn = (struct espconn *)arg;
+    int            index;
+    uint8_t         ch;
+
+    for (index=0; index <length; index++)
+    {
+        ch = *(data+index);
+	//os_printf("%c", ch);
+	if (load_size < MAX_SCRIPT_SIZE-5)
+	    load_script[4+load_size++] = ch;
+    }
+}
+
+
+static void ICACHE_FLASH_ATTR script_discon_cb(void *arg)
+{
+    char response[64];
+
+    load_script[4+load_size] = '\0';
+    *(uint32_t *)load_script = load_size + 5;
+    blob_save(0, (uint32_t *)load_script, load_size + 5);
+    os_free(load_script);
+
+    os_sprintf(response, "\rScript upload completed (%d Bytes)\r\n", load_size);
+    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+
+    system_os_post(user_procTaskPrio, SIG_SCRIPT_LOADED, (ETSParam) scriptcon);
+}
+
+
+/* Called when a client connects to the script server */
+static void ICACHE_FLASH_ATTR script_connected_cb(void *arg)
+{
+    char response[64];
+    struct espconn *pespconn = (struct espconn *)arg;
+
+    load_script = (uint8_t *)os_malloc(MAX_SCRIPT_SIZE);
+    load_size = 0;
+
+    //espconn_regist_sentcb(pespconn,     tcp_client_sent_cb);
+    espconn_regist_disconcb(pespconn,   script_discon_cb);
+    espconn_regist_recvcb(pespconn,     script_recv_cb);
+    espconn_regist_time(pespconn,  300, 1);
+}
+
+uint32_t ICACHE_FLASH_ATTR get_script_size(void)
+{
+    uint32_t size;
+
+    blob_load(0, &size, 4);
+    return size;
+}
+
+static uint8_t *my_script = NULL;
+uint32_t ICACHE_FLASH_ATTR read_script(void)
+{
+    uint32_t size = get_script_size();
+    if (size <= 5) return 0;
+
+    my_script = (uint8_t *)os_malloc(size);
+
+    if (my_script == 0) {
+	os_printf("Out of memory");
+	return 0;
+    }
+
+    blob_load(0, (uint32_t *)my_script, size);
+
+    uint32_t num_token = text_into_tokens(my_script+4);
+
+    if (num_token == 0) {
+	os_free(my_script);
+	my_script = NULL;
+    }
+    return num_token;
+}
+
+
+void ICACHE_FLASH_ATTR free_script(void)
+{
+    if (my_script != NULL) {
+	free_tokens();
+	os_free(my_script);
+    }
+    my_script = NULL;
+}
+#endif /* SCRIPTED */
+
 
 int parse_str_into_tokens(char *str, char **tokens, int max_tokens)
 {
@@ -180,7 +284,7 @@ void ICACHE_FLASH_ATTR scan_done(void *arg, STATUS status)
      os_sprintf(response, "scan fail !!!\r\n");
      ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
   }
-  system_os_post(0, SIG_CONSOLE_TX, (ETSParam) scanconn);
+  system_os_post(user_procTaskPrio, SIG_CONSOLE_TX, (ETSParam) scanconn);
 }
 #endif
 
@@ -239,8 +343,12 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 
     if (strcmp(tokens[0], "help") == 0)
     {
-        os_sprintf(response, "show [config|stats|mqtt|mqtt_broker]\r\n|set [ssid|password|auto_connect|ap_ssid|ap_password|network|dns|ip|netmask|gw|ap_on|ap_open|speed|config_port] <val>\r\n|quit|save [config]|reset [factory]|lock|unlock <password>|publish <topic> <data>|subscribe [local|remote] <topic>|unsubscribe [local|remote] <topic>");
+        os_sprintf(response, "show [config|stats|mqtt|script]\r\n|set [ssid|password|auto_connect|ap_ssid|ap_password|network|dns|ip|netmask|gw|ap_on|ap_open|speed|config_port] <val>\r\n|quit|save [config]|reset [factory]|lock|unlock <password>");
         ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+#ifdef SCRIPTED
+        os_sprintf(response, "|script <port>");
+        ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+#endif
 #ifdef ALLOW_SCANNING
         os_sprintf(response, "|scan");
         ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
@@ -327,10 +435,11 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 	   else
 		os_sprintf(response, "AP disabled\r\n");
            ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+
 	   goto command_handled_2;
       }
 
-      if (nTokens == 2 && (strcmp(tokens[1], "mqtt_broker")==0 || strcmp(tokens[1], "mqtt")==0)) {
+      if (nTokens == 2 && strcmp(tokens[1], "mqtt")==0) {
 	   MQTT_ClientCon *clientcon;
 	   int ccnt = 0;
 
@@ -350,8 +459,59 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
            os_sprintf(response, "MQTT client %s\r\n", mqtt_connected?"connected":"disconnected");
            ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));      
 #endif
+#ifdef SCRIPTED
+    	   os_sprintf(response, "Script %s\r\n", script_enabled?"enabled":"disabled");
+	   ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+#endif
 	   goto command_handled_2;
       }
+
+#ifdef SCRIPTED
+      if (nTokens >= 2 && strcmp(tokens[1], "script")==0) {
+	   uint32_t line_count, char_count, start_line = 1;
+	   if (nTokens == 3) start_line = atoi(tokens[2]);
+	   
+	   uint32_t size = get_script_size();
+	   if (size == 0) goto command_handled;
+
+	   uint8_t *script = (uint8_t *)os_malloc(size);
+	   uint8_t *p;
+	   bool nl;
+
+	   if (script == 0) {
+		os_sprintf(response, "Out of memory");
+		goto command_handled;
+	   }
+
+	   blob_load(0, (uint32_t *)script, size);
+
+	   p = script+4;
+	   for (line_count = 1; line_count < start_line && *p != 0; p++) {
+		if (*p == '\n') line_count++;
+	   }
+	   nl = true;
+	   for (char_count = 0; *p != 0 && char_count < MAX_CON_SEND_SIZE-20; p++, char_count++) {
+		if (nl) {
+		    os_sprintf(response, "\r%4d: ", line_count);
+		    char_count += 7;
+		    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+		    line_count++;
+		    nl = false;
+		}
+		ringbuf_memcpy_into(console_tx_buffer, p, 1);
+		if (*p == '\n') nl = true; 
+	   }
+	   if (*p == 0) {
+		ringbuf_memcpy_into(console_tx_buffer, "\r\n--end--", 9);
+	   } else {
+		ringbuf_memcpy_into(console_tx_buffer, "...", 3);
+	   }
+	   ringbuf_memcpy_into(console_tx_buffer, "\r\n", 2);
+
+	   os_free(script);
+	   goto command_handled_2;
+      }
+#endif
     }
 
     if (strcmp(tokens[0], "save") == 0)
@@ -388,6 +548,10 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 	if (nTokens == 2 && strcmp(tokens[1], "factory") == 0) {
            config_load_default(&config);
            config_save(&config);
+#ifdef SCRIPTED
+	   // clear script
+	   blob_zero(0, MAX_SCRIPT_SIZE);
+#endif
 	}
         os_printf("Restarting ... \r\n");
 	system_restart(); // if it works this will not return
@@ -402,73 +566,51 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 	os_sprintf(response, "Quitting console\r\n");
         goto command_handled;
     }
-
-    if (strcmp(tokens[0], "publish") == 0)
+#ifdef SCRIPTED
+    if (strcmp(tokens[0], "script") == 0)
     {
-	if (nTokens != 4) {
-            os_sprintf(response, INVALID_NUMARGS);
+	uint16_t port;
+
+        if (config.locked)
+        {
+            os_sprintf(response, INVALID_LOCKED);
             goto command_handled;
-	}
-	if (strcmp(tokens[1], "local") == 0) {
-	  MQTT_local_publish(tokens[2], tokens[3], os_strlen(tokens[3]), 0, 0);
-	}
-#ifdef MQTT_CLIENT
-	else if (strcmp(tokens[1], "remote") == 0 && mqtt_connected) {
-	  MQTT_Publish(&mqttClient, tokens[2], tokens[3], os_strlen(tokens[3]), 0, 0);
-	}
-#endif
-	os_sprintf(response, "Published topic\r\n");
-        goto command_handled;
-    }
+        }
 
-    if (strcmp(tokens[0], "subscribe") == 0)
-    {
-      bool retval = false;
-
-	if (nTokens != 3) {
+        if (nTokens != 2) {
             os_sprintf(response, INVALID_NUMARGS);
-            goto command_handled;
-	}
+	    goto command_handled;
+        }
+	
+	port = atoi(tokens[1]);
+        if (nTokens == 0) {
+            os_sprintf(response, "Invalid port");
+	    goto command_handled;
+        }
 
-	if (strcmp(tokens[1], "local") == 0) {
-	    retval = MQTT_local_subscribe(tokens[2], 0);
-	}
-#ifdef MQTT_CLIENT
-	else if (strcmp(tokens[1], "remote") == 0 && mqtt_connected) {
-	    retval = MQTT_Subscribe(&mqttClient, tokens[2], 0);
-	}
-#endif
-	if (retval)
-	  os_sprintf(response, "subscribed topic\r\n");
-	else
-	  os_sprintf(response, "subscribe failed\r\n");
-        goto command_handled;
+	// delete and disable existing script
+	script_enabled = false;
+	free_script();
+
+	scriptcon = pespconn;
+	downloadCon = (struct espconn *)os_zalloc(sizeof(struct espconn));
+
+	/* Equivalent to bind */
+	downloadCon->type  = ESPCONN_TCP;
+	downloadCon->state = ESPCONN_NONE;
+	downloadCon->proto.tcp = (esp_tcp *)os_zalloc(sizeof(esp_tcp));
+	downloadCon->proto.tcp->local_port = port;
+
+	/* Register callback when clients connect to the server */
+	espconn_regist_connectcb(downloadCon, script_connected_cb);
+
+	/* Put the connection in accept mode */
+	espconn_accept(downloadCon);
+
+	os_sprintf(response, "Waiting for script upload on port %d\r\n", port);
+	goto command_handled;
     }
-
-    if (strcmp(tokens[0], "unsubscribe") == 0)
-    {
-      bool retval = false;
-
-	if (nTokens != 3) {
-            os_sprintf(response, INVALID_NUMARGS);
-            goto command_handled;
-	}
-
-	if (strcmp(tokens[1], "local") == 0) {
-	    retval = MQTT_local_unsubscribe(tokens[2]);
-	}
-#ifdef MQTT_CLIENT
-	else if (strcmp(tokens[1], "remote") == 0 && mqtt_connected) {
-	    retval = MQTT_UnSubscribe(&mqttClient, tokens[2]);
-	}
 #endif
-	if (retval)
-	  os_sprintf(response, "unsubscribed topic\r\n");
-	else
-	  os_sprintf(response, "unsubscribe failed\r\n");
-        goto command_handled;
-    }
-
     if (strcmp(tokens[0], "lock") == 0)
     {
 	config.locked = 1;
@@ -646,6 +788,17 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 			IP2STR(&config.my_gw));
                 goto command_handled;
             }
+#ifdef REMOTE_CONFIG
+            if (strcmp(tokens[1],"config_port") == 0)
+            {
+                config.config_port = atoi(tokens[2]);
+		if (config.config_port == 0) 
+		  os_sprintf(response, "WARNING: if you save this, remote console access will be disabled!\r\n");
+		else
+		  os_sprintf(response, "Config port set to %d\r\n", config.config_port);
+                goto command_handled;
+            }
+#endif
 #ifdef NTP
 	    if (strcmp(tokens[1], "ntp_server") == 0)
 	    {
@@ -720,7 +873,7 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 command_handled:
     ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
 command_handled_2:
-    system_os_post(0, SIG_CONSOLE_TX, (ETSParam) pespconn);
+    system_os_post(user_procTaskPrio, SIG_CONSOLE_TX, (ETSParam) pespconn);
     return;
 }
 
@@ -741,7 +894,7 @@ static void ICACHE_FLASH_ATTR tcp_client_recv_cb(void *arg,
         // If a complete commandline is received, then signal the main
         // task that command is available for processing
         if (ch == '\n')
-            system_os_post(0, SIG_CONSOLE_RX, (ETSParam) arg);
+            system_os_post(user_procTaskPrio, SIG_CONSOLE_RX, (ETSParam) arg);
     }
 
     *(data+length) = 0;
@@ -777,14 +930,9 @@ static void ICACHE_FLASH_ATTR tcp_client_connected_cb(void *arg)
 #endif /* REMOTE_CONFIG */
 
 
-bool toggle;
 // Timer cb function
 void ICACHE_FLASH_ATTR timer_func(void *arg){
-uint32_t Vcurr;
 uint64_t t_new;
-uint32_t t_diff;
-
-    toggle = !toggle;
 
     // Do we still have to configure the AP netif? 
     if (do_ip_config) {
@@ -798,9 +946,11 @@ uint32_t t_diff;
         ntp_get_time();
 	t_ntp_resync = t_new;
     }
-#endif
 
-    os_timer_arm(&ptimer, toggle?1000:100, 0); 
+    if (ntp_sync_done())
+	MQTT_local_publish("$SYS/broker/time", get_timestr(config.ntp_timezone), 8, 0, 0);
+#endif
+    os_timer_arm(&ptimer, 1000, 0); 
 }
 
 //Priority 0 Task
@@ -813,7 +963,22 @@ static void ICACHE_FLASH_ATTR user_procTask(os_event_t *events)
     case SIG_START_SERVER:
 	// Anything else to do here, when the repeater has received its IP?
 	break;
+    case SIG_SCRIPT_LOADED:
+        {
+	    espconn_disconnect(downloadCon);
+	    espconn_delete(downloadCon);
+	    os_free(downloadCon->proto.tcp);
+	    os_free(downloadCon);
 
+	    if (read_script()) {
+		interpreter_syntax_check();
+		ringbuf_memcpy_into(console_tx_buffer, sytax_error_buffer, os_strlen(sytax_error_buffer));
+		ringbuf_memcpy_into(console_tx_buffer, "\r\n", 2);
+		free_script();
+	    }
+
+	    // continue to next case and print...
+	}
     case SIG_CONSOLE_TX:
         {
             struct espconn *pespconn = (struct espconn *) events->par;
@@ -995,10 +1160,20 @@ struct ip_info info;
 
     UART_init_console(BIT_RATE_115200, 0, console_rx_buffer, console_tx_buffer);
 
-    os_printf("\r\n\r\nWiFi Router/MQTT Broker V1.5 starting\r\n");
+    os_printf("\r\n\r\nWiFi Router/MQTT Broker V2.0 starting\r\n");
 
     // Load config
     config_load(&config);
+#ifdef SCRIPTED
+    script_enabled = false;
+    if (read_script()) {
+	if(interpreter_syntax_check() != -1) {
+	    script_enabled = true;
+	} else {
+	    os_printf("ERROR in script: %s\r\nScript disabled\r\n", sytax_error_buffer);
+	}
+    }
+#endif
 
     // Configure the AP and start it, if required
 
@@ -1025,7 +1200,7 @@ struct ip_info info;
 
 #ifdef REMOTE_CONFIG
     if (config.config_port != 0) {
-      os_printf("Starting Console TCP Server on %d port\r\n", CONSOLE_SERVER_PORT);
+      os_printf("Starting Console TCP Server on port %d\r\n", config.config_port);
       struct espconn *pCon = (struct espconn *)os_zalloc(sizeof(struct espconn));
 
       /* Equivalent to bind */
@@ -1072,16 +1247,11 @@ struct ip_info info;
     os_printf("Max number of TCP clients: %d\r\n", espconn_tcp_get_max_con());
 
     MQTT_server_start(1883 /*port*/, 30 /*max_subscriptions*/, 30 /*max_retained_items*/);
-/*
-    {
-    char *prog = "initaction subscribe local /test/#\r\n% Now the events and much more to come...\r\n on topic local /test/# action publish remote this_topic this_data";
-    char *str = (char *)os_malloc(os_strlen(prog+1));
-    os_strcpy(str, prog);
-    interpreter_init(str);
-    }
-*/
-    MQTT_local_onData(MQTT_local_DataCallback);
 
+    MQTT_local_onData(MQTT_local_DataCallback);
+#ifdef SCRIPTED
+    interpreter_init();
+#endif
     // Start the timer
     os_timer_setfn(&ptimer, timer_func, 0);
     os_timer_arm(&ptimer, 500, 0); 
