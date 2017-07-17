@@ -4,7 +4,7 @@
 #include "osapi.h"
 
 #define lang_debug //os_printf
-#define lang_info os_printf
+#define lang_info //os_printf
 
 #else
 #include <stdlib.h>
@@ -23,8 +23,9 @@
 #endif
 
 #include "lang.h"
-
+#include "user_config.h"
 #include "mqtt_topics.h"
+#include "ntp.h"
 
 #define len_check(x) \
 if (interpreter_status==SYNTAX_CHECK && next_token+(x) >= max_token) \
@@ -71,6 +72,19 @@ static void ICACHE_FLASH_ATTR lang_timers_timeout(void *arg) {
 	interpreter_data_len = 0;
 	interpreter_status = TIMER;
 	parse_statement(0);
+}
+
+
+void ICACHE_FLASH_ATTR init_timestamps(uint8_t *curr_time) {
+	int i;
+
+	for (i = 0; i<ts_counter; i++) {
+	    if (os_strcmp(curr_time, timestamps[i].ts) >= 0) {
+		timestamps[i].happened = true;
+	    } else {
+		timestamps[i].happened = false;
+	    }
+	}
 }
 
 
@@ -305,7 +319,7 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
 
 int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 {
-  while (next_token < max_token && !is_token(next_token, "on") && !is_token(next_token, "at")) {
+  while (next_token < max_token && !is_token(next_token, "on") && !is_token(next_token, "at") && !is_token(next_token, "endif")) {
    lang_debug("action %s %s\r\n", my_token[next_token], doit?"do":"ignore");
 
    if (is_token(next_token, "subscribe")) {
@@ -350,7 +364,6 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
    }
 
    else if (is_token(next_token, "publish")) {
-	bool retval;
 	bool retained = false;
 	char *data;
 	int data_len;
@@ -389,6 +402,23 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 	} else {
 	   return syntax_error(lr_token, "'local' or 'remote' expected");
 	}
+   }
+
+   else if (is_token(next_token, "if")) {
+	uint32_t if_val;
+	char *if_char;
+	int if_len;
+	Value_Type if_type;
+
+	len_check(3);
+	if ((next_token = parse_expession(next_token+1, &if_char, &if_len, &if_type)) == -1) return -1;
+	if (syn_chk && !is_token(next_token, "then")) return syntax_error(next_token, "'then' expected");
+
+	if (doit) {
+	   if_val = atoi(if_char);
+	   lang_info("if %s\r\n", if_val != 0?"done":"not done");
+	}
+	if ((next_token = parse_action(next_token+1, doit && if_val != 0)) == -1) return -1;
    }
 
    else if (is_token(next_token, "settimer")) {
@@ -443,31 +473,92 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 	return syntax_error(next_token, "action command expected");
 	
   }
+  if (is_token(next_token, "endif")) next_token++;
   return next_token;
+}
+
+
+int ICACHE_FLASH_ATTR parse_expession(int next_token, char **data, int *data_len, Value_Type *data_type)
+{
+   if (is_token(next_token, "not")) {
+	len_check(1);
+	lang_debug("expr not\r\n");
+
+	if ((next_token = parse_expession(next_token+1, data, data_len, data_type)) == -1) return -1;
+	*data = atoi(*data)?"0":"1";
+	*data_len = 1;
+	*data_type = STRING_T;
+   }
+
+   else {
+	if ((next_token = parse_value(next_token, data, data_len, data_type)) == -1) return -1;
+
+	// if it is not some kind of binary operation - finished
+	if (!is_token(next_token, "eq") && !is_token(next_token, "gt") && !is_token(next_token, "gte")
+	    && !is_token(next_token, "str_gt") && !is_token(next_token, "str_gte")) return next_token;
+
+	int op = next_token;
+
+	char *r_data;
+	int r_data_len;
+	Value_Type r_data_type;
+	if ((next_token = parse_expession(next_token+1, &r_data, &r_data_len, &r_data_type)) == -1) return -1;
+	//os_printf("l:%s(%d) r:%s(%d)\r\n", *data, *data_len, r_data, r_data_len);
+
+	*data_len = 1;
+	*data_type = STRING_T;
+	if (is_token(op, "eq")) {
+	    *data = os_strcmp(*data, r_data)?"0":"1";	
+	}
+	else if (is_token(op, "gt")) {
+	    *data = atoi(*data)>atoi(r_data)?"1":"0";
+	}
+	else if (is_token(op, "gte")) {
+	    *data = atoi(*data)>=atoi(r_data)?"1":"0";
+	}
+	else if (is_token(op, "str_gt")) {
+	    *data = os_strcmp(*data, r_data)>0?"1":"0";	
+	}
+	else if (is_token(op, "str_gte")) {
+	    *data = os_strcmp(*data, r_data)>=0?"1":"0";	
+	}
+   }
+
+   return next_token;
 }
 
 
 int ICACHE_FLASH_ATTR parse_value(int next_token, char **data, int *data_len, Value_Type *data_type)
 {
-static char val_buf[64];
-
-   if (is_token(next_token, "this_data")) {
-	lang_debug("val this_data\r\n");
-	if (!in_topic_statement) return syntax_error(next_token, "undefined this_data");
+   if (is_token(next_token, "$this_data")) {
+	lang_debug("val $this_data\r\n");
+	if (!in_topic_statement) return syntax_error(next_token, "undefined $this_data");
 	*data = interpreter_data;
 	*data_len = interpreter_data_len;
 	*data_type = DATA_T;
 	return next_token+1;
    }
 
-   else if (is_token(next_token, "this_topic")) {
-	lang_debug("val this_topic\r\n");
-	if (!in_topic_statement) return syntax_error(next_token, "undefined this_topic");
+   else if (is_token(next_token, "$this_topic")) {
+	lang_debug("val $this_topic\r\n");
+	if (!in_topic_statement) return syntax_error(next_token, "undefined $this_topic");
 	*data = interpreter_topic;
 	*data_len = os_strlen(interpreter_topic)+1;
 	*data_type = STRING_T;
 	return next_token+1;
    }
+#ifdef NTP
+   else if (is_token(next_token, "$timestamp")) {
+	lang_debug("val $timestamp\r\n");
+	if (ntp_sync_done())
+	    *data = get_timestr();
+	else
+	    *data = "invalid";
+	*data_len = os_strlen(*data)+1;
+	*data_type = STRING_T;
+	return next_token+1;
+   }
+#endif
 
 /*   else if (my_token[next_token][0] == '\'') {
 	char *p = &(my_token[next_token][1]);
@@ -479,7 +570,7 @@ static char val_buf[64];
 	return next_token+1;
    }
 */
-   else if (my_token[next_token][0] == '$') {
+   else if (my_token[next_token][0] == '$' && my_token[next_token][1]<='9') {
 	uint32_t var_no = atoi(&(my_token[next_token][1]));
 	if (var_no == 0 || var_no > MAX_VARS) return syntax_error(next_token+1, "invalid var number");
 	var_no--;
@@ -491,26 +582,34 @@ static char val_buf[64];
    }
 
    else if (my_token[next_token][0] == '#') {
-	int i, j, a;
-	char *p = &(my_token[next_token][1]);
 
 	lang_debug("val hexbinary\r\n");
-	if (os_strlen(p)/2 > sizeof(val_buf)) return syntax_error(next_token, "binary sting too long");
-	for (i = 0, j = 0; i < os_strlen(p); i+=2, j++) {
-	   if (p[i] <= '9')
-		a = p[i] - '0';
-	   else
-		a = toupper(p[i]) - 'A'+10;
-	   a <<= 4;
-	   if (p[i+1] <= '9')
-		a += p[i+1] - '0';
-	   else
-		a += toupper(p[i+1]) - 'A'+10;
-	   val_buf[j] = a;
+
+	// Convert it in place to binary once during syntax check
+	if (syn_chk) {
+	    int i, j, len = os_strlen(my_token[next_token]);
+	    uint8_t a, *p = &(my_token[next_token][1]);
+
+	    if (len<3) return syntax_error(next_token, "hexbinary too short");
+	    if (len>512) return syntax_error(next_token, "hexbinary too long");
+	    for (i = 0, j = 1; i < len-1; i+=2, j++) {
+		if (p[i] <= '9')
+		    a = p[i] - '0';
+	   	else
+		    a = toupper(p[i]) - 'A'+10;
+		a <<= 4;
+		if (p[i+1] <= '9')
+		    a += p[i+1] - '0';
+		else
+		    a += toupper(p[i+1]) - 'A'+10;
+	   	p[j] = a;
+	    }
+	    p[j] = '\0';
+	    p[0] = (uint8_t)j-2;
 	}
  
-	*data = val_buf;
-	*data_len = j;
+	*data = &my_token[next_token][2];
+	*data_len = my_token[next_token][1];
 	*data_type = DATA_T;
 	return next_token+1;
    }
@@ -570,10 +669,18 @@ int ICACHE_FLASH_ATTR interpreter_topic_received(const char *topic, const char *
 
    interpreter_status = (local)?TOPIC_LOCAL:TOPIC_REMOTE;
    interpreter_topic = (char *)topic;
-   interpreter_data = (char *)data;
    interpreter_data_len = data_len;
+   if ((interpreter_data = (uint8_t *)os_malloc(data_len+1)) == 0) {
+	os_printf("Out of Memory\r\n");
+	return -1;
+   }
+   os_memcpy(interpreter_data, data, data_len);
+   interpreter_data[data_len] = '\0';
 
-   return parse_statement(0);
+   int retval = parse_statement(0);
+
+   os_free(interpreter_data);
+   return retval;
 }
 
 

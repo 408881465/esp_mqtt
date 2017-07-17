@@ -23,4 +23,6 @@ int interpreter_syntax_check();
 int interpreter_init();
 int interpreter_init_reconnect(void);
 int interpreter_topic_received(const char *topic, const char *data, int data_len, bool local);
+
+void init_timestamps(uint8_t *curr_time);
 void check_timestamps(uint8_t *curr_time);

@@ -30,6 +30,7 @@ struct espconn *downloadCon;
 struct espconn *scriptcon;
 uint8_t *load_script;
 uint32_t load_size;
+bool timestamps_init;
 #endif
 
 /* System Task, for signals refer to user_config.h */
@@ -824,6 +825,7 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn)
 	    if (strcmp(tokens[1], "ntp_timezone") == 0)
 	    {
 		config.ntp_timezone = atoi(tokens[2]);
+		set_timezone(config.ntp_timezone);
 		os_sprintf(response, "NTP timezone set to %d h\r\n", config.ntp_timezone);
                 goto command_handled;
             }
@@ -953,9 +955,13 @@ uint64_t t_new;
     }
 
     if (ntp_sync_done()) {
-	uint8_t *timestr = get_timestr(config.ntp_timezone);
+	uint8_t *timestr = get_timestr();
 	MQTT_local_publish("$SYS/broker/time", get_timestr(config.ntp_timezone), 8, 0, 0);
 #ifdef SCRIPTED
+	if (!timestamps_init) {
+	    init_timestamps(timestr);
+	    timestamps_init = true;
+	}
 	check_timestamps(timestr);
 #endif
     }
@@ -1061,6 +1067,7 @@ void wifi_handle_event_cb(System_Event_t *evt)
 #ifdef NTP
 	if (os_strcmp(config.ntp_server, "none") != 0)
 	    ntp_set_server(config.ntp_server);
+	    set_timezone(config.ntp_timezone);
 #endif
 
         // Post a Server Start message as the IP has been acquired to Task with priority 0
@@ -1262,6 +1269,7 @@ struct ip_info info;
 
     MQTT_local_onData(MQTT_local_DataCallback);
 #ifdef SCRIPTED
+    timestamps_init = false;
     interpreter_init();
 #endif
     // Start the timer

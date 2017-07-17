@@ -20,6 +20,7 @@ static struct espconn *pCon, pConDNS;
 
 static struct timeval t_tv = {0,0};
 static uint64_t t_offset = 0;
+static int16_t ntp_timezone = 0;
 
 void ICACHE_FLASH_ATTR get_cur_time(struct timeval *tv)
 {
@@ -29,13 +30,19 @@ void ICACHE_FLASH_ATTR get_cur_time(struct timeval *tv)
 }
 
 
-uint8_t* ICACHE_FLASH_ATTR get_timestr(int16_t timezone)
+void ICACHE_FLASH_ATTR set_timezone(int16_t timezone)
+{
+	ntp_timezone = timezone;
+}
+
+
+uint8_t* ICACHE_FLASH_ATTR get_timestr()
 {
 	struct timeval tv;
 	static uint8_t buf[10];
 
 	get_cur_time(&tv);
-	tv.tv_sec += timezone * 3600;
+	tv.tv_sec += ntp_timezone * 3600;
 	os_sprintf(buf, "%02d:%02d:%02d", (tv.tv_sec/3600)%24, (tv.tv_sec/60)%60, tv.tv_sec%60);
 	return buf;
 }
@@ -89,6 +96,8 @@ ntp_t *ntp;
 struct timeval tv;
 int32_t hh, mm, ss;
 
+	if (!ntp_sync_done()) os_printf("NTP synced\r\n");
+
 	get_cur_time(&tv);
 
 	// get the according sys_time;
@@ -101,7 +110,7 @@ int32_t hh, mm, ss;
 
 	ntp_to_tv(ntp->trans_time, &t_tv);
 
-	os_printf("NTP resync - diff: %d usecs\r\n", t_tv.tv_usec-tv.tv_usec);
+//	os_printf("NTP re-sync - diff: %d usecs\r\n", t_tv.tv_usec-tv.tv_usec);
 /*
 	ss = t_tv.tv_sec%60;
 	mm = (t_tv.tv_sec/60)%60;

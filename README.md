@@ -92,8 +92,8 @@ do
 % Also remember the topic in variable $1 and start timer 1 with 5000 ms
 on topic local /test/#
 do 
-	publish remote this_topic this_data
-	setvar $1 this_topic
+	publish remote $this_topic $this_data
+	setvar $1 $this_topic
 	settimer 1 5000
 
 % When timer 1 expires, publish a string 0 to the topic stored in $1
@@ -121,9 +121,14 @@ In general, scripts have the following BNF:
              unsubscribe (local|remote) <topic-id> |
              settimer <num> <const> |
              setvar $<num> <val> |
-             action ; action
+             if <expr> then <action> endif
+             <action> <action>
 
-<val> := <const> | $<num> | this_item | this_data | #<hex-val>
+<expr> ::= <val> <op> <val> | not <expr>
+
+<op> := eq | gt | gte | str_ge | str_gte
+
+<val> := <const> | #<hex-string> | $<num> | $this_item | $this_data | $timestamp
 
 <timestamp> := hh:mm:ss
 ```
