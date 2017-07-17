@@ -26,11 +26,21 @@
 
 #include "mqtt_topics.h"
 
+#define len_check(x) \
+if (interpreter_status==SYNTAX_CHECK && next_token+(x) >= max_token) \
+  return syntax_error(next_token+(x), "end of text")
+#define syn_chk (interpreter_status==SYNTAX_CHECK)
+
 typedef struct _var_entry_t {
     uint8_t data[MAX_VAR_LEN];
     uint32_t data_len;
     Value_Type data_type;
 } var_entry_t;
+
+typedef struct _timestamp_entry_t {
+    uint8_t *ts;
+    bool happened;
+} timestamp_entry_t;
 
 char **my_token;
 int max_token;
@@ -41,9 +51,13 @@ char *interpreter_topic;
 char *interpreter_data;
 int interpreter_data_len;
 int interpreter_timer;
+char *interpreter_timestamp;
+int ts_counter;
 
 static os_timer_t timers[MAX_TIMERS];
 static var_entry_t vars[MAX_VARS];
+static timestamp_entry_t timestamps[MAX_TIMESTAMPS];
+
 
 static void ICACHE_FLASH_ATTR lang_timers_timeout(void *arg) {
 
@@ -57,6 +71,28 @@ static void ICACHE_FLASH_ATTR lang_timers_timeout(void *arg) {
 	interpreter_data_len = 0;
 	interpreter_status = TIMER;
 	parse_statement(0);
+}
+
+
+void ICACHE_FLASH_ATTR check_timestamps(uint8_t *curr_time) {
+	int i;
+
+	if (!script_enabled) return;
+	for (i = 0; i<ts_counter; i++) {
+	    if (os_strcmp(curr_time, timestamps[i].ts) >= 0) {
+		if (timestamps[i].happened) continue;
+		lang_info("timerstamp %s happened\r\n", timestamps[i].ts);
+
+		interpreter_topic = interpreter_data ="";
+		interpreter_data_len = 0;
+		interpreter_status = CLOCK;
+		interpreter_timestamp = timestamps[i].ts;
+		parse_statement(0);
+		timestamps[i].happened = true;
+	    } else {
+		timestamps[i].happened = false;
+	    }
+	}
 }
 
 
@@ -185,19 +221,36 @@ int j;
 
 int ICACHE_FLASH_ATTR parse_statement(int next_token)
 {
+  bool event_happened;
+
   while (next_token < max_token) {
 
     in_topic_statement = false;
 
     if (is_token(next_token, "on")) {
-   	bool event_happened;
 	lang_debug("statement on\r\n");
+
 	if ((next_token = parse_event(next_token+1, &event_happened)) == -1) return -1;
-	if (!is_token(next_token, "do"))
-	   return syntax_error(next_token, "'do' expected");   
+	if (syn_chk && !is_token(next_token, "do")) return syntax_error(next_token, "'do' expected");   
 	if ((next_token = parse_action(next_token+1, event_happened)) == -1) return -1;
-    } else {
-	return syntax_error(next_token, "'on' expected");
+    } 
+
+    else if (is_token(next_token, "at")) {
+	lang_debug("statement at\r\n");
+
+	len_check(2);
+	if (syn_chk && os_strlen(my_token[next_token+1]) != 8) return syntax_error(next_token, "invalid timestamp"); 
+	if (syn_chk && !is_token(next_token+2, "do")) return syntax_error(next_token, "'do' expected");
+	if (syn_chk) {
+	    if (ts_counter>=MAX_TIMESTAMPS) return syntax_error(next_token, "too many timestamps");
+	    timestamps[ts_counter++].ts = my_token[next_token+1];
+	}
+	event_happened = (interpreter_status==CLOCK && os_strcmp(interpreter_timestamp, my_token[next_token+1])==0);
+	if ((next_token = parse_action(next_token+3, event_happened)) == -1) return -1;
+    }
+
+    else {
+	return syntax_error(next_token, "'on' or 'at' expected");
     }
   }
   return next_token;
@@ -218,7 +271,7 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
 	lang_debug("event topic\r\n");
 
 	in_topic_statement = true;
-	if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	len_check(2);
 	if (is_token(next_token+1, "remote")) {
 	  if (interpreter_status!=TOPIC_REMOTE) return next_token+3;
 	} else if (is_token(next_token+1, "local")) {
@@ -236,7 +289,7 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
    if (is_token(next_token, "timer")) {
 	lang_debug("event timer\r\n");
 
-	if (next_token+1 >= max_token) return syntax_error(next_token+1, "end of text");
+	len_check(1);
 	uint32_t timer_no = atoi(my_token[next_token+1]);
 	if (timer_no == 0 || timer_no > MAX_TIMERS) return syntax_error(next_token+1, "invalid timer number");
 	if (interpreter_status==TIMER && interpreter_timer == --timer_no) {
@@ -252,13 +305,13 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
 
 int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 {
-  while (next_token < max_token && !is_token(next_token, "on")) {
+  while (next_token < max_token && !is_token(next_token, "on") && !is_token(next_token, "at")) {
    lang_debug("action %s %s\r\n", my_token[next_token], doit?"do":"ignore");
 
    if (is_token(next_token, "subscribe")) {
 	bool retval;
 
-        if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	len_check(2);
 	if (is_token(next_token+1, "remote")) {
 	   if (doit && mqtt_connected) {
 		retval = MQTT_Subscribe(&mqttClient, my_token[next_token+2], 0);
@@ -278,7 +331,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
    else if (is_token(next_token, "unsubscribe")) {
 	bool retval;
 
-        if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	len_check(2);
 	if (is_token(next_token+1, "remote")) {
 	   if (doit && mqtt_connected) {
 		retval = MQTT_UnSubscribe(&mqttClient, my_token[next_token+2]);
@@ -307,7 +360,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 	Value_Type topic_type;
 	int lr_token = next_token+1;
 
-        if (next_token+3 >= max_token) return syntax_error(next_token+3, "end of text");
+	len_check(3);
 	if ((next_token = parse_value(next_token+2, &topic, &topic_len, &topic_type)) == -1) return -1;
 	if ((next_token = parse_value(next_token, &data, &data_len, &data_type)) == -1) return -1;
 	if (next_token < max_token && is_token(next_token, "retained")) {
@@ -339,7 +392,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
    }
 
    else if (is_token(next_token, "settimer")) {
-	if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	len_check(2);
 	uint32_t timer_no = atoi(my_token[next_token+1]);
 	if (timer_no == 0 || timer_no > MAX_TIMERS) return syntax_error(next_token+1, "invalid timer number");
 
@@ -363,7 +416,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
    }
 
    else if (is_token(next_token, "setvar")) {
-	if (next_token+2 >= max_token) return syntax_error(next_token+2, "end of text");
+	len_check(2);
 	if (my_token[next_token+1][0] != '$') return syntax_error(next_token+1, "invalid var identifier");
 	uint32_t var_no = atoi(&(my_token[next_token+1][1]));
 	if (var_no == 0 || var_no > MAX_VARS) return syntax_error(next_token+1, "invalid var number");
@@ -478,6 +531,8 @@ int ICACHE_FLASH_ATTR interpreter_syntax_check()
    interpreter_status = SYNTAX_CHECK;
    interpreter_topic = interpreter_data ="";
    interpreter_data_len = 0;
+   os_bzero(&timestamps, sizeof(timestamps));
+   ts_counter = 0;
    return parse_statement(0);
 }
 

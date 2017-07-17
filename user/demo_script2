@@ -24,3 +24,11 @@ on timer 2
 do 
 	publish local /t/1 off 
 	settimer 1 2000
+
+at 12:00:00
+do
+	publish local /t/2 "High Noon"
+
+at 09:20:15
+do
+	publish local /t/2 "Guten Morgen"

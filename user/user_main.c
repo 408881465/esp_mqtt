@@ -952,8 +952,13 @@ uint64_t t_new;
 	t_ntp_resync = t_new;
     }
 
-    if (ntp_sync_done())
+    if (ntp_sync_done()) {
+	uint8_t *timestr = get_timestr(config.ntp_timezone);
 	MQTT_local_publish("$SYS/broker/time", get_timestr(config.ntp_timezone), 8, 0, 0);
+#ifdef SCRIPTED
+	check_timestamps(timestr);
+#endif
+    }
 #endif
     os_timer_arm(&ptimer, 1000, 0); 
 }
