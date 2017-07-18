@@ -4,7 +4,7 @@
 #include "osapi.h"
 
 #define lang_debug //os_printf
-#define lang_info //os_printf
+#define lang_info os_printf
 
 #else
 #include <stdlib.h>
@@ -27,10 +27,15 @@
 #include "mqtt_topics.h"
 #include "ntp.h"
 
+extern void do_command(char *t1, char *t2, char *t3);
+
 #define len_check(x) \
 if (interpreter_status==SYNTAX_CHECK && next_token+(x) >= max_token) \
   return syntax_error(next_token+(x), "end of text")
 #define syn_chk (interpreter_status==SYNTAX_CHECK)
+
+#define ON "\xf0"
+#define CONFIG "\xf1"
 
 typedef struct _var_entry_t {
     uint8_t data[MAX_VAR_LEN];
@@ -130,6 +135,21 @@ bool    in_token = false;
    lang_debug("lexxer preprocessing\r\n");
 
    for (p = q = str; *p != 0; p++) {
+	// special case "on" keyword - replace by special token ON (0xf0)
+	if (!in_token && *p=='o' && *(p+1)=='n' && *(p+2)<=' ') {
+	   *q++ = '\xf0';
+	   p += 1;
+	   continue;
+	}
+
+	// special case "config" keyword - replace by special token CONFIG (0xf1)
+	if (!in_token && *p=='c' && *(p+1)=='o' && *(p+2)=='n' && *(p+3)=='f'
+	     && *(p+4)=='i' && *(p+5)=='g' && *(p+6)<=' ') {
+	   *q++ = '\xf1';
+	   p += 5;
+	   continue;
+	}
+
 	if (*p == '\\') {
 	   // next char is quoted, copy that - skip this one
 	   if (*(p+1) != 0) *q++ = *++p;
@@ -214,7 +234,7 @@ int ICACHE_FLASH_ATTR search_token(int i, char *s)
 {
    for (; i < max_token; i++)
 	if (is_token(i, s)) return i;
-   return -1;
+   return max_token;
 }
 
 
@@ -222,11 +242,13 @@ int ICACHE_FLASH_ATTR syntax_error(int i, char *message)
 {
 int j;
 
-   os_sprintf(sytax_error_buffer, "Error (%s) at >>", message);
+   os_sprintf(syntax_error_buffer, "Error (%s) at >>", message);
    for (j = i; j < i+5 && j < max_token; j++) {
-	int pos = os_strlen(sytax_error_buffer);
-	if (sizeof(sytax_error_buffer)-pos-2 > os_strlen(my_token[j])) {
-	    os_sprintf(sytax_error_buffer+pos, "%s ", my_token[j]);
+	int pos = os_strlen(syntax_error_buffer);
+	if (is_token(j, ON)) my_token[j] = "on";
+	if (is_token(j, CONFIG)) my_token[j] = "config";
+	if (sizeof(syntax_error_buffer)-pos-2 > os_strlen(my_token[j])) {
+	    os_sprintf(syntax_error_buffer+pos, "%s ", my_token[j]);
 	}
    }
    return -1;
@@ -236,35 +258,28 @@ int j;
 int ICACHE_FLASH_ATTR parse_statement(int next_token)
 {
   bool event_happened;
+  int on_token;
 
   while (next_token < max_token) {
 
     in_topic_statement = false;
+    
+    if (!syn_chk) next_token = search_token(next_token, ON);
 
-    if (is_token(next_token, "on")) {
+    if (is_token(next_token, ON)) {
 	lang_debug("statement on\r\n");
 
 	if ((next_token = parse_event(next_token+1, &event_happened)) == -1) return -1;
-	if (syn_chk && !is_token(next_token, "do")) return syntax_error(next_token, "'do' expected");   
+	if (!syn_chk && !event_happened) continue;
+
+	if (syn_chk && !is_token(next_token, "do")) return syntax_error(next_token, "'do' expected");
 	if ((next_token = parse_action(next_token+1, event_happened)) == -1) return -1;
-    } 
-
-    else if (is_token(next_token, "at")) {
-	lang_debug("statement at\r\n");
-
-	len_check(2);
-	if (syn_chk && os_strlen(my_token[next_token+1]) != 8) return syntax_error(next_token, "invalid timestamp"); 
-	if (syn_chk && !is_token(next_token+2, "do")) return syntax_error(next_token, "'do' expected");
-	if (syn_chk) {
-	    if (ts_counter>=MAX_TIMESTAMPS) return syntax_error(next_token, "too many timestamps");
-	    timestamps[ts_counter++].ts = my_token[next_token+1];
-	}
-	event_happened = (interpreter_status==CLOCK && os_strcmp(interpreter_timestamp, my_token[next_token+1])==0);
-	if ((next_token = parse_action(next_token+3, event_happened)) == -1) return -1;
     }
-
+    else if (is_token(next_token, CONFIG)) {
+	next_token+=3;
+    }
     else {
-	return syntax_error(next_token, "'on' or 'at' expected");
+	return syntax_error(next_token, "'on' or 'config' expected");
     }
   }
   return next_token;
@@ -276,7 +291,8 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
    *happend = false;
 
    if (is_token(next_token, "init")) {
-	if (next_token+1 >= max_token) return syntax_error(next_token+1, "end of text");
+	lang_debug("event init\r\n");
+
 	*happend = (interpreter_status==INIT || interpreter_status==RE_INIT);
 	return next_token+1;
    }
@@ -296,7 +312,9 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
 
 	*happend = Topics_matches(my_token[next_token+2], true, interpreter_topic);
 
-        lang_info("topic %s %s %s %s\r\n", my_token[next_token+1], my_token[next_token+2], interpreter_topic, *happend?"match":"no match");
+	if (*happend) 
+           lang_info("topic %s %s %s match\r\n", my_token[next_token+1], my_token[next_token+2], interpreter_topic);
+
 	return next_token+3;
    }
 
@@ -313,13 +331,26 @@ int ICACHE_FLASH_ATTR parse_event(int next_token, bool *happend)
 	return next_token+2;
    }
 
-   return syntax_error(next_token, "'init', 'topic', or 'timer' expected");
+    else if (is_token(next_token, "clock")) {
+	lang_debug("event clock\r\n");
+
+	len_check(1);
+	if (syn_chk && os_strlen(my_token[next_token+1]) != 8) return syntax_error(next_token, "invalid timestamp"); 
+	if (syn_chk) {
+	    if (ts_counter>=MAX_TIMESTAMPS) return syntax_error(next_token, "too many timestamps");
+	    timestamps[ts_counter++].ts = my_token[next_token+1];
+	}
+	*happend = (interpreter_status==CLOCK && os_strcmp(interpreter_timestamp, my_token[next_token+1])==0);
+	return next_token+2;
+    }
+
+   return syntax_error(next_token, "'init', 'topic', 'clock', or 'timer' expected");
 }
 
 
 int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit)
 {
-  while (next_token < max_token && !is_token(next_token, "on") && !is_token(next_token, "at") && !is_token(next_token, "endif")) {
+  while (next_token < max_token && !is_token(next_token, ON) && !is_token(next_token, CONFIG) && !is_token(next_token, "endif")) {
    lang_debug("action %s %s\r\n", my_token[next_token], doit?"do":"ignore");
 
    if (is_token(next_token, "subscribe")) {
@@ -626,13 +657,27 @@ int ICACHE_FLASH_ATTR interpreter_syntax_check()
 {
    lang_debug("interpreter_syntax_check\r\n");
 
-   os_sprintf(sytax_error_buffer, "Syntax okay");
+   os_sprintf(syntax_error_buffer, "Syntax okay");
    interpreter_status = SYNTAX_CHECK;
    interpreter_topic = interpreter_data ="";
    interpreter_data_len = 0;
    os_bzero(&timestamps, sizeof(timestamps));
    ts_counter = 0;
    return parse_statement(0);
+}
+
+int ICACHE_FLASH_ATTR interpreter_config()
+{
+  int next_token = 0;
+
+  while ((next_token = search_token(next_token, CONFIG)) < max_token) {
+	lang_debug("statement config\r\n");
+
+	len_check(2);
+	do_command("set", my_token[next_token+1], my_token[next_token+2]);
+	next_token+=3;
+  }
+  return next_token;
 }
 
 int ICACHE_FLASH_ATTR interpreter_init()

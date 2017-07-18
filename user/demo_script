@@ -1,0 +1,29 @@
+config ap_ssid DerKluge
+config ap_password Bonn2016
+
+on init
+do
+	subscribe local /test/#
+	settimer 1 2000
+
+config network 10.0.6.1
+
+% Now the events, checked whenever something happens
+
+% Here a remote republish, of any local topic starting with "/test/"
+
+on topic local /test/#
+do 
+	publish remote $this_topic $this_data
+
+% When timer 1 expires, publish a string 0 to the topic stored in $1
+on timer 1
+do 
+	publish local /t/time $timestamp
+	settimer 1 2000
+
+% Here a local publication once each day at noon
+on clock 12:00:00
+do
+	publish local /t/2 "High Noon"
+

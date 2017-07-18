@@ -111,10 +111,10 @@ In general, scripts have the following BNF:
 
 ```
 <statement> ::= on <event> do <action> |
-		at <timestamp> do <action> |
+		config <param> <value> |
                 <statement> <statement>
 
-<event> ::= init | timer <num> | topic (local|remote) <topic-id>
+<event> ::= init | timer <num> | clock <timestamp> | topic (local|remote) <topic-id>
 
 <action> ::= publish (local|remote) <topic-id> <val> [retained] |
              subscribe (local|remote) <topic-id> |

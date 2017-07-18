@@ -884,6 +884,20 @@ command_handled_2:
     return;
 }
 
+#ifdef SCRIPTED
+void ICACHE_FLASH_ATTR do_command(char *t1, char *t2, char *t3) {
+	
+    ringbuf_memcpy_into(console_rx_buffer, t1, os_strlen(t1));
+    ringbuf_memcpy_into(console_rx_buffer, " ", 1);
+    ringbuf_memcpy_into(console_rx_buffer, t2, os_strlen(t2));
+    ringbuf_memcpy_into(console_rx_buffer, " ", 1);
+    ringbuf_memcpy_into(console_rx_buffer, t3, os_strlen(t3));
+    console_handle_command(0);
+    ringbuf_memcpy_from(syntax_error_buffer, console_tx_buffer, ringbuf_bytes_used(console_tx_buffer));
+    os_printf("%s", syntax_error_buffer);
+}
+#endif
+
 #ifdef REMOTE_CONFIG
 static void ICACHE_FLASH_ATTR tcp_client_recv_cb(void *arg,
                                                  char *data,
@@ -989,7 +1003,7 @@ static void ICACHE_FLASH_ATTR user_procTask(os_event_t *events)
 
 	    if (read_script()) {
 		interpreter_syntax_check();
-		ringbuf_memcpy_into(console_tx_buffer, sytax_error_buffer, os_strlen(sytax_error_buffer));
+		ringbuf_memcpy_into(console_tx_buffer, syntax_error_buffer, os_strlen(syntax_error_buffer));
 		ringbuf_memcpy_into(console_tx_buffer, "\r\n", 2);
 		free_script();
 	    }
@@ -1188,8 +1202,9 @@ struct ip_info info;
     if (read_script()) {
 	if(interpreter_syntax_check() != -1) {
 	    script_enabled = true;
+	    interpreter_config();
 	} else {
-	    os_printf("ERROR in script: %s\r\nScript disabled\r\n", sytax_error_buffer);
+	    os_printf("ERROR in script: %s\r\nScript disabled\r\n", syntax_error_buffer);
 	}
     }
 #endif
