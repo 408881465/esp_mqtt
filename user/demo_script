@@ -1,10 +1,12 @@
 config ap_ssid DerKluge
 config ap_password Bonn2016
+config ntp_server 1.pool.ntp.org
 
 on init
 do
 	subscribe local /test/#
 	settimer 1 2000
+	println "MQTT Script 1.0 starting"
 
 config network 10.0.6.1
 
@@ -20,6 +22,7 @@ do
 on timer 1
 do 
 	publish local /t/time $timestamp
+	println $timestamp
 	settimer 1 2000
 
 % Here a local publication once each day at noon
