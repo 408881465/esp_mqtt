@@ -128,7 +128,7 @@ In general, scripts have the following BNF:
 
 <expr> ::= <val> <op> <expr> | not <expr>
 
-<op> := eq | gt | gte | str_ge | str_gte | add | sub
+<op> := eq | gt | gte | str_ge | str_gte | add | sub | mult | div
 
 <val> := <const> | #<hex-string> | $<num> | $this_item | $this_data | $timestamp
 

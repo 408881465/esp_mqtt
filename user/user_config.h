@@ -30,7 +30,10 @@ typedef enum {SIG_DO_NOTHING=0, SIG_START_SERVER=1, SIG_UART0, SIG_SCRIPT_LOADED
 // Define this if you want to have script support.
 //
 #define SCRIPTED  1
+// Define this if you want to have GPIO OUT support in scripts.
+#define GPIO	  1
 // Some params for scripts
+
 #define MAX_SCRIPT_SIZE 0x1000
 #define MAX_TIMERS	4
 #define MAX_VARS	6

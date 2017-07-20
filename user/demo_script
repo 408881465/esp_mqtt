@@ -1,6 +1,6 @@
 config ap_ssid DerKluge
 config ap_password Bonn2016
-config ntp_server 1.pool.ntp.org
+config ntp_server 1.de.pool.ntp.org
 
 on init
 do

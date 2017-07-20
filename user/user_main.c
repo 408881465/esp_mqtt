@@ -55,12 +55,17 @@ bool connected;
 uint8_t my_channel;
 bool do_ip_config;
 
+void ICACHE_FLASH_ATTR user_set_softap_wifi_config(void);
+void ICACHE_FLASH_ATTR user_set_softap_ip_config(void);
+
 uint8_t remote_console_disconnect;
 struct espconn *console_conn;
 bool client_sent_pending;
 
-void ICACHE_FLASH_ATTR user_set_softap_wifi_config(void);
-void ICACHE_FLASH_ATTR user_set_softap_ip_config(void);
+
+void ICACHE_FLASH_ATTR to_console(char *str) {
+    ringbuf_memcpy_into(console_tx_buffer, str, os_strlen(str));
+}
 
 #ifdef MQTT_CLIENT
 
@@ -130,7 +135,7 @@ static void ICACHE_FLASH_ATTR script_discon_cb(void *arg) {
     os_free(load_script);
 
     os_sprintf(response, "\rScript upload completed (%d Bytes)\r\n", load_size);
-    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+    to_console(response);
 
     system_os_post(user_procTaskPrio, SIG_SCRIPT_LOADED, (ETSParam) scriptcon);
 }
@@ -264,12 +269,12 @@ void ICACHE_FLASH_ATTR scan_done(void *arg, STATUS status) {
 	while (bss_link != NULL) {
 	    os_sprintf(response, "%d,\"%s\",%d,\"" MACSTR "\",%d\r\n",
 		       bss_link->authmode, bss_link->ssid, bss_link->rssi, MAC2STR(bss_link->bssid), bss_link->channel);
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    bss_link = bss_link->next.stqe_next;
 	}
     } else {
 	os_sprintf(response, "scan fail !!!\r\n");
-	ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	to_console(response);
     }
     system_os_post(user_procTaskPrio, SIG_CONSOLE_TX, (ETSParam) console_conn);
 }
@@ -287,7 +292,7 @@ bool ICACHE_FLASH_ATTR printf_topic(topic_entry * topic, void *user_data) {
     os_sprintf(response, "%s: \"%s\" (QoS %d)\r\n",
 	       topic->clientcon !=
 	       LOCAL_MQTT_CLIENT ? topic->clientcon->connect_info.client_id : "local", topic->topic, topic->qos);
-    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+    to_console(response);
     return false;
 }
 
@@ -295,7 +300,7 @@ bool ICACHE_FLASH_ATTR printf_retainedtopic(retained_entry * entry, void *user_d
     uint8_t *response = (uint8_t *) user_data;
 
     os_sprintf(response, "\"%s\" len: %d (QoS %d)\r\n", entry->topic, entry->data_len, entry->qos);
-    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+    to_console(response);
     return false;
 }
 
@@ -305,6 +310,7 @@ void MQTT_local_DataCallback(uint32_t * args, const char *topic, uint32_t topic_
     interpreter_topic_received(topic, data, length, true);
 #endif
 }
+
 
 static char INVALID_LOCKED[] = "Invalid command. Config locked\r\n";
 static char INVALID_NUMARGS[] = "Invalid number of arguments\r\n";
@@ -335,23 +341,23 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
 
     if (strcmp(tokens[0], "help") == 0) {
 	os_sprintf(response,
-		   "show [config|stats|mqtt|script]\r\n|set [ssid|password|auto_connect|ap_ssid|ap_password|network|dns|ip|netmask|gw|ap_on|ap_open|speed|config_port] <val>\r\n|quit|save [config]|reset [factory]|lock|unlock <password>");
-	ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+		   "show [config|stats|mqtt|script]\r\n|set [ssid|password|auto_connect|ap_ssid|ap_password|network|dns|ip|netmask|gw|ap_on|ap_open|speed|config_port] <val>\r\n|quit|save [config]|reset [factory]|lock [<password>]|unlock <password>");
+	to_console(response);
 #ifdef SCRIPTED
 	os_sprintf(response, "|script <port>");
-	ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	to_console(response);
 #endif
 #ifdef ALLOW_SCANNING
 	os_sprintf(response, "|scan");
-	ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	to_console(response);
 #endif
 #ifdef NTP
 	os_sprintf(response, "|time|set ntp_server <ntp_host>|set ntp_interval <secs>|set <ntp_timezone> <hours>\r\n");
-	ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	to_console(response);
 #endif
 #ifdef MQTT_CLIENT
 	os_sprintf(response, "|set [mqtt_host|mqtt_port|mqtt_user|mqtt_password|mqtt_id] <val>\r\n");
-	ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	to_console(response);
 #endif
 	ringbuf_memcpy_into(console_tx_buffer, "\r\n", 2);
 	goto command_handled_2;
@@ -365,34 +371,34 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
 	    os_sprintf(response, "STA: SSID:%s PW:%s%s\r\n",
 		       config.ssid,
 		       config.locked ? "***" : (char *)config.password, config.auto_connect ? "" : " [AutoConnect:0]");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 
 	    os_sprintf(response, "AP:  SSID:%s PW:%s%s%s IP:%d.%d.%d.%d/24\r\n",
 		       config.ap_ssid,
 		       config.locked ? "***" : (char *)config.ap_password,
 		       config.ap_open ? " [open]" : "",
 		       config.ap_on ? "" : " [disabled]", IP2STR(&config.network_addr));
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 
 	    // if static IP, add it
 	    os_sprintf(response,
 		       config.my_addr.addr ?
 		       "Static IP: %d.%d.%d.%d Netmask: %d.%d.%d.%d Gateway: %d.%d.%d.%d\r\n"
 		       : "", IP2STR(&config.my_addr), IP2STR(&config.my_netmask), IP2STR(&config.my_gw));
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    // if static DNS, add it
 	    os_sprintf(response, config.dns_addr.addr ? "DNS: %d.%d.%d.%d\r\n" : "", IP2STR(&config.dns_addr));
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 #ifdef MQTT_CLIENT
 	    os_sprintf(response, "MQTT client %s\r\n", mqtt_enabled ? "enabled" : "disabled");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 
 	    if (os_strcmp(config.mqtt_host, "none") != 0) {
 		os_sprintf(response,
 			   "MQTT host: %s\r\nMQTT port: %d\r\nMQTT user: %s\r\nMQTT password: %s\r\nMQTT id: %s\r\n",
 			   config.mqtt_host, config.mqtt_port, config.mqtt_user,
 			   config.locked ? "***" : (char *)config.mqtt_password, config.mqtt_id);
-		ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+		to_console(response);
 	    }
 #endif
 #ifdef NTP
@@ -400,11 +406,11 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
 		os_sprintf(response,
 			   "NTP server: %s (interval: %d s, tz: %d)\r\n",
 			   config.ntp_server, config.ntp_interval / 1000000, config.ntp_timezone);
-		ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+		to_console(response);
 	    }
 #endif
 	    os_sprintf(response, "Clock speed: %d\r\n", config.clock_speed);
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    goto command_handled_2;
 	}
 
@@ -413,21 +419,28 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
 	    int16_t i;
 
 	    os_sprintf(response, "System uptime: %d:%02d:%02d\r\n", time / 3600, (time % 3600) / 60, time % 60);
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 
 	    if (connected) {
 		os_sprintf(response, "External IP-address: " IPSTR "\r\n", IP2STR(&my_ip));
 	    } else {
 		os_sprintf(response, "Not connected to AP\r\n");
 	    }
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    if (config.ap_on)
 		os_sprintf(response, "%d Station%s connected to AP\r\n",
 			   wifi_softap_get_station_num(), wifi_softap_get_station_num() == 1 ? "" : "s");
 	    else
 		os_sprintf(response, "AP disabled\r\n");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
-
+	    to_console(response);
+#ifdef NTP
+	    if (ntp_sync_done()) {
+		os_sprintf(response, "NTP synced: %s \r\n", get_timestr());
+	    } else {
+		os_sprintf(response, "NTP no sync\r\n");
+	    }
+	    to_console(response);
+#endif
 	    goto command_handled_2;
 	}
 
@@ -436,24 +449,24 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
 	    int ccnt = 0;
 
 	    os_sprintf(response, "Current clients:\r\n");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    for (clientcon = clientcon_list; clientcon != NULL; clientcon = clientcon->next, ccnt++) {
 		os_sprintf(response, "%s%s", clientcon->connect_info.client_id, clientcon->next != NULL ? ", " : "");
-		ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+		to_console(response);
 	    }
 	    os_sprintf(response, "%sCurrent subsriptions:\r\n", ccnt ? "\r\n" : "");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    iterate_topics(printf_topic, response);
 	    os_sprintf(response, "Retained topics:\r\n");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 	    iterate_retainedtopics(printf_retainedtopic, response);
 #ifdef MQTT_CLIENT
 	    os_sprintf(response, "MQTT client %s\r\n", mqtt_connected ? "connected" : "disconnected");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 #endif
 #ifdef SCRIPTED
 	    os_sprintf(response, "Script %s\r\n", script_enabled ? "enabled" : "disabled");
-	    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+	    to_console(response);
 #endif
 	    goto command_handled_2;
 	}
@@ -488,7 +501,7 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
 		if (nl) {
 		    os_sprintf(response, "\r%4d: ", line_count);
 		    char_count += 7;
-		    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+		    to_console(response);
 		    line_count++;
 		    nl = false;
 		}
@@ -598,16 +611,35 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
     }
 #endif
     if (strcmp(tokens[0], "lock") == 0) {
+	if (config.locked) {
+	    os_sprintf(response, "Config already locked\r\n");
+	    goto command_handled;
+	}
+	if (nTokens == 1) {
+	    if (os_strlen(config.lock_password) == 0) {
+		os_sprintf(response, "No password defined\r\n");
+		goto command_handled;
+	    }
+	}
+	else if (nTokens == 2) {
+	    os_sprintf(config.lock_password, "%s", tokens[1]);
+	}
+	else {
+	    os_sprintf(response, INVALID_NUMARGS);
+	    goto command_handled;
+	}
 	config.locked = 1;
-	os_sprintf(response, "Config locked\r\n");
+	config_save(&config);
+	os_sprintf(response, "Config locked (pw: %s)\r\n", config.lock_password);
 	goto command_handled;
     }
 
     if (strcmp(tokens[0], "unlock") == 0) {
 	if (nTokens != 2) {
 	    os_sprintf(response, INVALID_NUMARGS);
-	} else if (strcmp(tokens[1], config.password) == 0) {
+	} else if (os_strcmp(tokens[1], config.lock_password) == 0) {
 	    config.locked = 0;
+	    config_save(&config);
 	    os_sprintf(response, "Config unlocked\r\n");
 	} else {
 	    os_sprintf(response, "Unlock failed. Invalid password\r\n");
@@ -822,7 +854,7 @@ void ICACHE_FLASH_ATTR console_handle_command(struct espconn *pespconn) {
     os_sprintf(response, "\r\nInvalid Command\r\n");
 
  command_handled:
-    ringbuf_memcpy_into(console_tx_buffer, response, os_strlen(response));
+    to_console(response);
  command_handled_2:
     system_os_post(user_procTaskPrio, SIG_CONSOLE_TX, (ETSParam) pespconn);
     return;
@@ -1145,8 +1177,13 @@ void ICACHE_FLASH_ATTR user_init() {
     script_enabled = false;
     if (read_script()) {
 	if (interpreter_syntax_check() != -1) {
+	    bool lockstat = config.locked;
+	    config.locked = false;
+
 	    script_enabled = true;
 	    interpreter_config();
+
+	    config.locked = lockstat;
 	} else {
 	    os_printf("ERROR in script: %s\r\nScript disabled\r\n", syntax_error_buffer);
 	}

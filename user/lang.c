@@ -513,7 +513,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 		vars[var_no].data_type = var_type;
 	    }
 	}
-
+#ifdef GPIO
 	else if (is_token(next_token, "gpio_out")) {
 	    len_check(2);
 
@@ -534,7 +534,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 		    easygpio_outputSet(gpio_no, atoi(gpio_data) != 0);
 	    }
 	}
-
+#endif
 	else
 	    return syntax_error(next_token, "action command expected");
 
@@ -563,12 +563,14 @@ int ICACHE_FLASH_ATTR parse_expression(int next_token, char **data, int *data_le
 
 	// if it is not some kind of binary operation - finished
 	if (!is_token(next_token, "eq") 
+	    && !is_token(next_token, "add")
+	    && !is_token(next_token, "sub")
+	    && !is_token(next_token, "mult")
+	    && !is_token(next_token, "div")
 	    && !is_token(next_token, "gt")
 	    && !is_token(next_token, "gte")
 	    && !is_token(next_token, "str_gt")
-	    && !is_token(next_token, "str_gte")
-	    && !is_token(next_token, "add")
-	    && !is_token(next_token, "sub"))
+	    && !is_token(next_token, "str_gte"))
 	    return next_token;
 
 	int op = next_token;
@@ -599,6 +601,14 @@ int ICACHE_FLASH_ATTR parse_expression(int next_token, char **data, int *data_le
 	    *data_len = os_strlen(res_str);
 	} else if (is_token(op, "sub")) {
 	    os_sprintf(res_str, "%d", atoi(*data) - atoi(r_data));
+	    *data = res_str;
+	    *data_len = os_strlen(res_str);
+	} else if (is_token(op, "mult")) {
+	    os_sprintf(res_str, "%d", atoi(*data) * atoi(r_data));
+	    *data = res_str;
+	    *data_len = os_strlen(res_str);
+	} else if (is_token(op, "div")) {
+	    os_sprintf(res_str, "%d", atoi(*data) / atoi(r_data));
 	    *data = res_str;
 	    *data_len = os_strlen(res_str);
 	}
