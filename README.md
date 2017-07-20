@@ -120,13 +120,15 @@ In general, scripts have the following BNF:
              subscribe (local|remote) <topic-id> |
              unsubscribe (local|remote) <topic-id> |
              settimer <num> <const> |
-             setvar $<num> <val> |
-             if <expr> then <action> endif
+             setvar $<num> <expr> |
+             gpio_out <num> <expr> |
+             if <expr> then <action> endif |
+	     print <expr> | println <expr>
              <action> <action>
 
-<expr> ::= <val> <op> <val> | not <expr>
+<expr> ::= <val> <op> <expr> | not <expr>
 
-<op> := eq | gt | gte | str_ge | str_gte
+<op> := eq | gt | gte | str_ge | str_gte | add | sub
 
 <val> := <const> | #<hex-string> | $<num> | $this_item | $this_data | $timestamp
 

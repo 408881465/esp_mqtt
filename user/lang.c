@@ -6,6 +6,8 @@
 #include "mqtt_topics.h"
 #include "ntp.h"
 
+#include "easygpio.h"
+
 #define lang_debug		//os_printf
 #define lang_info 		//os_printf
 
@@ -345,54 +347,13 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 	    Value_Type p_type;
 
 	    len_check(1);
-	    if ((next_token = parse_expession(next_token + 1, &p_char, &p_len, &p_type)) == -1)
+	    if ((next_token = parse_expression(next_token + 1, &p_char, &p_len, &p_type)) == -1)
 		return -1;
 	    if (doit) {
 		con_print(p_char);
 		if (is_nl)
 		    con_print("\r\n");
 	    }
-	}
-
-	else if (is_token(next_token, "subscribe")) {
-	    bool retval;
-
-	    len_check(2);
-	    if (is_token(next_token + 1, "remote")) {
-		if (doit && mqtt_connected) {
-		    retval = MQTT_Subscribe(&mqttClient, my_token[next_token + 2], 0);
-		    lang_info("subsrcibe remote %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
-		}
-	    } else if (is_token(next_token + 1, "local")) {
-		if (doit && interpreter_status != RE_INIT) {
-		    retval = MQTT_local_subscribe(my_token[next_token + 2], 0);
-		    lang_info("subsrcibe local %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
-		}
-	    } else {
-		return syntax_error(next_token + 1, "'local' or 'remote' expected");
-	    }
-	    next_token += 3;
-	}
-
-	else if (is_token(next_token, "unsubscribe")) {
-	    bool retval;
-
-	    len_check(2);
-	    if (is_token(next_token + 1, "remote")) {
-		if (doit && mqtt_connected) {
-		    retval = MQTT_UnSubscribe(&mqttClient, my_token[next_token + 2]);
-		    lang_info("unsubsrcibe remote %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
-		}
-	    } else if (is_token(next_token + 1, "local")) {
-		if (doit && interpreter_status != RE_INIT) {
-		    retval = MQTT_local_unsubscribe(my_token[next_token + 2]);
-		    lang_info("unsubsrcibe local %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
-		}
-	    } else {
-		return syntax_error(next_token + 1, "'local' or 'remote' expected");
-	    }
-
-	    next_token += 3;
 	}
 
 	else if (is_token(next_token, "publish")) {
@@ -439,6 +400,47 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 	    }
 	}
 
+	else if (is_token(next_token, "subscribe")) {
+	    bool retval;
+
+	    len_check(2);
+	    if (is_token(next_token + 1, "remote")) {
+		if (doit && mqtt_connected) {
+		    retval = MQTT_Subscribe(&mqttClient, my_token[next_token + 2], 0);
+		    lang_info("subsrcibe remote %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
+		}
+	    } else if (is_token(next_token + 1, "local")) {
+		if (doit && interpreter_status != RE_INIT) {
+		    retval = MQTT_local_subscribe(my_token[next_token + 2], 0);
+		    lang_info("subsrcibe local %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
+		}
+	    } else {
+		return syntax_error(next_token + 1, "'local' or 'remote' expected");
+	    }
+	    next_token += 3;
+	}
+
+	else if (is_token(next_token, "unsubscribe")) {
+	    bool retval;
+
+	    len_check(2);
+	    if (is_token(next_token + 1, "remote")) {
+		if (doit && mqtt_connected) {
+		    retval = MQTT_UnSubscribe(&mqttClient, my_token[next_token + 2]);
+		    lang_info("unsubsrcibe remote %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
+		}
+	    } else if (is_token(next_token + 1, "local")) {
+		if (doit && interpreter_status != RE_INIT) {
+		    retval = MQTT_local_unsubscribe(my_token[next_token + 2]);
+		    lang_info("unsubsrcibe local %s %s\r\n", my_token[next_token + 2], retval ? "success" : "failed");
+		}
+	    } else {
+		return syntax_error(next_token + 1, "'local' or 'remote' expected");
+	    }
+
+	    next_token += 3;
+	}
+
 	else if (is_token(next_token, "if")) {
 	    uint32_t if_val;
 	    char *if_char;
@@ -446,7 +448,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 	    Value_Type if_type;
 
 	    len_check(3);
-	    if ((next_token = parse_expession(next_token + 1, &if_char, &if_len, &if_type)) == -1)
+	    if ((next_token = parse_expression(next_token + 1, &if_char, &if_len, &if_type)) == -1)
 		return -1;
 	    if (syn_chk && !is_token(next_token, "then"))
 		return syntax_error(next_token, "'then' expected");
@@ -496,7 +498,7 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 	    char *var_data;
 	    int var_len;
 	    Value_Type var_type;
-	    if ((next_token = parse_value(next_token + 2, &var_data, &var_len, &var_type)) == -1)
+	    if ((next_token = parse_expression(next_token + 2, &var_data, &var_len, &var_type)) == -1)
 		return -1;
 
 	    if (doit) {
@@ -512,6 +514,27 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
 	    }
 	}
 
+	else if (is_token(next_token, "gpio_out")) {
+	    len_check(2);
+
+	    uint32_t gpio_no = atoi(my_token[next_token + 1]);
+	    if (gpio_no > 16)
+		return syntax_error(next_token + 1, "invalid gpio number");
+
+	    char *gpio_data;
+	    int gpio_len;
+	    Value_Type gpio_type;
+	    if ((next_token = parse_expression(next_token + 2, &gpio_data, &gpio_len, &gpio_type)) == -1)
+		return -1;
+
+	    if (doit) {
+		lang_info("gpio_out %d %d\r\n", gpio_no, atoi(gpio_data) != 0);
+
+		if (easygpio_pinMode(gpio_no, EASYGPIO_NOPULL, EASYGPIO_OUTPUT))
+		    easygpio_outputSet(gpio_no, atoi(gpio_data) != 0);
+	    }
+	}
+
 	else
 	    return syntax_error(next_token, "action command expected");
 
@@ -521,12 +544,13 @@ int ICACHE_FLASH_ATTR parse_action(int next_token, bool doit) {
     return next_token;
 }
 
-int ICACHE_FLASH_ATTR parse_expession(int next_token, char **data, int *data_len, Value_Type * data_type) {
+int ICACHE_FLASH_ATTR parse_expression(int next_token, char **data, int *data_len, Value_Type * data_type) {
+
     if (is_token(next_token, "not")) {
 	len_check(1);
 	lang_debug("expr not\r\n");
 
-	if ((next_token = parse_expession(next_token + 1, data, data_len, data_type)) == -1)
+	if ((next_token = parse_expression(next_token + 1, data, data_len, data_type)) == -1)
 	    return -1;
 	*data = atoi(*data) ? "0" : "1";
 	*data_len = 1;
@@ -538,10 +562,13 @@ int ICACHE_FLASH_ATTR parse_expession(int next_token, char **data, int *data_len
 	    return -1;
 
 	// if it is not some kind of binary operation - finished
-	if (!is_token(next_token, "eq") && !is_token(next_token, "gt")
+	if (!is_token(next_token, "eq") 
+	    && !is_token(next_token, "gt")
 	    && !is_token(next_token, "gte")
 	    && !is_token(next_token, "str_gt")
-	    && !is_token(next_token, "str_gte"))
+	    && !is_token(next_token, "str_gte")
+	    && !is_token(next_token, "add")
+	    && !is_token(next_token, "sub"))
 	    return next_token;
 
 	int op = next_token;
@@ -549,7 +576,8 @@ int ICACHE_FLASH_ATTR parse_expession(int next_token, char **data, int *data_len
 	char *r_data;
 	int r_data_len;
 	Value_Type r_data_type;
-	if ((next_token = parse_expession(next_token + 1, &r_data, &r_data_len, &r_data_type)) == -1)
+	char res_str[10];
+	if ((next_token = parse_expression(next_token + 1, &r_data, &r_data_len, &r_data_type)) == -1)
 	    return -1;
 	//os_printf("l:%s(%d) r:%s(%d)\r\n", *data, *data_len, r_data, r_data_len);
 
@@ -565,6 +593,14 @@ int ICACHE_FLASH_ATTR parse_expession(int next_token, char **data, int *data_len
 	    *data = os_strcmp(*data, r_data) > 0 ? "1" : "0";
 	} else if (is_token(op, "str_gte")) {
 	    *data = os_strcmp(*data, r_data) >= 0 ? "1" : "0";
+	} else if (is_token(op, "add")) {
+	    os_sprintf(res_str, "%d", atoi(*data) + atoi(r_data));
+	    *data = res_str;
+	    *data_len = os_strlen(res_str);
+	} else if (is_token(op, "sub")) {
+	    os_sprintf(res_str, "%d", atoi(*data) - atoi(r_data));
+	    *data = res_str;
+	    *data_len = os_strlen(res_str);
 	}
     }
 

@@ -7,6 +7,8 @@ do
 	subscribe local /test/#
 	settimer 1 2000
 	println "MQTT Script 1.0 starting"
+	setvar $1 0
+	setvar $2 0
 
 config network 10.0.6.1
 
@@ -22,7 +24,10 @@ do
 on timer 1
 do 
 	publish local /t/time $timestamp
-	println $timestamp
+	gpio_out 2 $1
+	setvar $1 not $1
+	setvar $2 $2 sub 1
+	println $2
 	settimer 1 2000
 
 % Here a local publication once each day at noon
